@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>WebGL Куб</title>
+    <style>
+        body { 
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas { 
+            display: block; 
+        }
+        .info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            
+            background-color: rgba(0, 0, 0, 0.5);
+            
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            color: rgb(36, 35, 35);
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <h3>Инструкция:</h3>
+        <p>Колесо мыши - приближение/удаление</p>
+        <p>Левый клик на кубе - разделение на 4 куба</p>
+        <p>Правый клик + перетаскивание - вращение сцены</p>
+        <p>Правый клик на кубе + перетаскивание - перемещение куба</p>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Основные переменные
+        let scene, camera, renderer, raycaster, mouse;
+        let cubes = [];
+        let isDragging = false;
+        let draggedCube = null;
+        let isRotating = false;
+        let previousMousePosition = {
+            x: 0,
+            y: 0
+        };
+        let cubeGroup;
+        let velocities = []; // Добавляем массив для хранения скоростей
+        let originalCubePosition = new THREE.Vector3(0, 0, 0); // Позиция исходного куба
+        let cubeCreationTimes = []; // Добавляем массив для хранения времени создания кубов
+        let currentTime = 0; // Текущее время для отслеживания периода "неприлипания"
+        let trailParticles = []; // Массив для хранения частиц шлейфа
+        let rotationSpeed = 0; // Скорость вращения для шлейфа
+        let lightningSegments = []; // Массив для хранения сегментов молнии
+        let lightningTimer = 0; // Таймер для создания молнии
+        let lightningInProgress = false; // Флаг активной молнии
+
+        // Инициализация сцены
+        function init() {
+            // Создание сцены
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            // Создание камеры
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            camera.position.y = 0; // Возвращаем камеру в нейтральную позицию
+
+            // Создание рендерера
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Добавление света
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true; // Включаем отбрасывание теней
+            scene.add(directionalLight);
+            
+            // Настройка теней
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Инициализация инструментов выбора
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            // Создание группы для кубов
+            cubeGroup = new THREE.Group();
+            scene.add(cubeGroup);
+
+            // Создаем группу для частиц шлейфа как дочерний элемент cubeGroup
+            trailGroup = new THREE.Group();
+            cubeGroup.add(trailGroup);
+
+            // Создание первого куба
+            createCube(0, 0, 0, 1);
+
+            // Обработчики событий
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('wheel', onMouseWheel);
+
+            // Запуск анимации
+            animate();
+        }
+
+        // Создание куба с яркими цветами
+        function createCube(x, y, z, size, color) {
+            const geometry = new THREE.BoxGeometry(size, size, size);
+            
+            // Создаем яркие цвета для кубов
+            const brightColors = [
+                0xFF0000, // Ярко-красный
+                0x00FF00, // Ярко-зеленый
+                0x0000FF, // Ярко-синий
+                0xFFFF00, // Ярко-желтый
+                0xFF00FF, // Ярко-розовый
+                0x00FFFF, // Ярко-голубой
+                0xFF8000, // Оранжевый
+                0x8000FF  // Фиолетовый
+            ];
+            
+            // Выбираем случайный яркий цвет
+            const cubeColor = color || brightColors[Math.floor(Math.random() * brightColors.length)];
+            
+            const material = new THREE.MeshPhongMaterial({
+                color: cubeColor,
+                shininess: 80, // Увеличиваем блеск
+                specular: 0x333333, // Более заметные блики
+                emissive: 0x111111 // Легкое собственное свечение для лучшей видимости
+            });
+            
+            const cube = new THREE.Mesh(geometry, material);
+            cube.position.set(x, y, z);
+            cube.userData.size = size;
+            
+            // Включаем отбрасывание теней
+            cube.castShadow = true;
+            cube.receiveShadow = true;
+            
+            cubeGroup.add(cube);
+            cubes.push(cube);
+            
+            // Добавляем нулевую начальную скорость для куба
+            velocities.push({ 
+                x: 0, 
+                y: 0, 
+                z: 0 
+            });
+            
+            // Сохраняем время создания куба
+            cubeCreationTimes.push(currentTime);
+            
+            return cube;
+        }
+
+        // Разделение куба на 4 меньших
+        function explodeCube(cube) {
+            console.log("Разбиваем куб с размером: " + cube.userData.size);
+
+            const position = cube.position.clone();
+            const size = cube.userData.size / 2;
+            const offset = size / 2;
+            
+            // Удаление исходного куба и его скорости
+            cubeGroup.remove(cube);
+            const index = cubes.indexOf(cube);
+            if (index > -1) {
+                cubes.splice(index, 1);
+                velocities.splice(index, 1);
+                cubeCreationTimes.splice(index, 1);
+            }
+            
+            // Функция для генерации случайной скорости разлета (для всех осей)
+            function randomVelocity() {
+                return (Math.random() - 0.5) * 0.2;
+            }
+            
+            // Создание 4-х новых кубов с разлетом
+            const cube1 = createCube(position.x - offset, position.y - offset, position.z - offset, size);
+            const cube2 = createCube(position.x + offset, position.y - offset, position.z - offset, size);
+            const cube3 = createCube(position.x - offset, position.y + offset, position.z - offset, size);
+            const cube4 = createCube(position.x + offset, position.y + offset, position.z - offset, size);
+            
+            // Устанавливаем случайные скорости для разлета
+            const index1 = cubes.indexOf(cube1);
+            const index2 = cubes.indexOf(cube2);
+            const index3 = cubes.indexOf(cube3);
+            const index4 = cubes.indexOf(cube4);
+            
+            // Базовая сила разлета
+            const explosionForce = 0.05;
+            
+            // Устанавливаем скорости разлета во все стороны от центра
+            velocities[index1] = { 
+                x: -explosionForce + randomVelocity(), 
+                y: -explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity() 
+            };
+            velocities[index2] = { 
+                x: explosionForce + randomVelocity(), 
+                y: -explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity() 
+            };
+            velocities[index3] = { 
+                x: -explosionForce + randomVelocity(), 
+                y: explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity() 
+            };
+            velocities[index4] = { 
+                x: explosionForce + randomVelocity(), 
+                y: explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity()
+            };
+        }
+
+        // Обработчики событий мыши
+        function onMouseDown(event) {
+            event.preventDefault();
+            
+            // Получение координат клика
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (intersects.length > 0) {
+                const selectedCube = intersects[0].object;
+                
+                // Левый клик - взрыв куба
+                if (event.button === 0) {
+                    if (selectedCube.userData.size > 0.1) { // Минимальный размер для деления
+                        explodeCube(selectedCube);
+                    }
+                } 
+                // Правый клик - начало перетаскивания
+                else if (event.button === 2) {
+                    isDragging = true;
+                    draggedCube = selectedCube;
+                }
+            } else if (event.button === 2) {
+                // Правый клик без выбора куба - вращение сцены
+                isRotating = true;
+            }
+            
+            previousMousePosition = {
+                x: event.clientX,
+                y: event.clientY
+            };
+        }
+
+        function onMouseUp(event) {
+            isDragging = false;
+            isRotating = false;
+            draggedCube = null;
+        }
+
+        function onMouseMove(event) {
+            if (isDragging && draggedCube) {
+                // Перетаскивание куба
+                const deltaX = (event.clientX - previousMousePosition.x) * 0.01;
+                const deltaY = (event.clientY - previousMousePosition.y) * 0.01;
+                
+                draggedCube.position.x += deltaX;
+                draggedCube.position.y -= deltaY;
+            } 
+            else if (isRotating) {
+                // Вращение группы кубов
+                const deltaRotationX = (event.clientX - previousMousePosition.x) * 0.01;
+                const deltaRotationY = (event.clientY - previousMousePosition.y) * 0.01;
+                
+                cubeGroup.rotation.y += deltaRotationX;
+                cubeGroup.rotation.x += deltaRotationY;
+                
+                // Расчет скорости вращения для создания шлейфа
+                rotationSpeed = Math.sqrt(deltaRotationX * deltaRotationX + deltaRotationY * deltaRotationY);
+            }
+            
+            previousMousePosition = {
+                x: event.clientX,
+                y: event.clientY
+            };
+        }
+
+        function onMouseWheel(event) {
+            // Приближение/удаление камеры
+            const delta = Math.sign(event.deltaY);
+            camera.position.z += delta * 0.5;
+            
+            // Ограничения на приближение/удаление
+            camera.position.z = Math.max(2, Math.min(20, camera.position.z));
+        }
+
+        // Изменение размера окна
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Анимация
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Увеличиваем счетчик времени
+            currentTime++;
+            
+            // Увеличиваем таймер молнии
+            lightningTimer++;
+            
+            // Случайно создаем молнию каждые 5-10 секунд, если ее еще нет
+            if (!lightningInProgress && lightningTimer > 300 && Math.random() < 0.005) {
+                createLightning();
+                lightningTimer = 0;
+            }
+            
+            // Обновляем молнию, если она активна
+            if (lightningInProgress) {
+                updateLightning();
+            }
+            
+            // Проверка коллизий между кубами
+            checkCollisions();
+            
+            // Проверка возможности объединения кубов
+            checkMerging();
+            
+            // Обновляем частицы шлейфа
+            updateTrailParticles();
+            
+            // Медленное вращение кубов вокруг своей оси и применение скоростей
+            cubes.forEach((cube, index) => {
+                cube.rotation.x += 0.005;
+                cube.rotation.y += 0.005;
+                
+                // Применяем скорости для движения кубов
+                cube.position.x += velocities[index].x;
+                cube.position.y += velocities[index].y;
+                cube.position.z += velocities[index].z;
+                
+                // Границы мира - предотвращаем выход кубов за пределы видимости
+                const maxDistance = 10; // Максимальное расстояние от центра
+                const bounceFactorWall = 0.8; // Коэффициент отскока от стенок
+                
+                // Отскок от границ мира по всем осям
+                if (Math.abs(cube.position.x) > maxDistance) {
+                    cube.position.x = Math.sign(cube.position.x) * maxDistance;
+                    velocities[index].x = -velocities[index].x * bounceFactorWall;
+                }
+                
+                if (Math.abs(cube.position.y) > maxDistance) {
+                    cube.position.y = Math.sign(cube.position.y) * maxDistance;
+                    velocities[index].y = -velocities[index].y * bounceFactorWall;
+                }
+                
+                if (Math.abs(cube.position.z) > maxDistance) {
+                    cube.position.z = Math.sign(cube.position.z) * maxDistance;
+                    velocities[index].z = -velocities[index].z * bounceFactorWall;
+                }
+                
+                // Постепенное замедление (очень малое трение в невесомости)
+                velocities[index].x *= 0.995;
+                velocities[index].y *= 0.995;
+                velocities[index].z *= 0.995;
+                
+                // Добавляем слабое случайное движение для эффекта парения
+                if (Math.random() < 0.1) { // С вероятностью 10% добавляем импульс
+                    velocities[index].x += (Math.random() - 0.5) * 0.0003;
+                    velocities[index].y += (Math.random() - 0.5) * 0.0003;
+                    velocities[index].z += (Math.random() - 0.5) * 0.0003;
+                }
+                
+                // Остановка слишком медленных движений
+                if (Math.abs(velocities[index].x) < 0.0001) velocities[index].x = 0;
+                if (Math.abs(velocities[index].y) < 0.0001) velocities[index].y = 0;
+                if (Math.abs(velocities[index].z) < 0.0001) velocities[index].z = 0;
+                
+                // Проверка, находится ли куб в состоянии "покоя"
+                const isAtRest = Math.abs(velocities[index].x) < 0.001 && 
+                                  Math.abs(velocities[index].y) < 0.001 && 
+                                  Math.abs(velocities[index].z) < 0.001;
+                
+                // Период "охлаждения" - время, в течение которого новые кубы не притягиваются
+                const coolingPeriod = 120; // примерно 2 секунды при 60 FPS
+                const isCooledDown = (currentTime - cubeCreationTimes[index]) > coolingPeriod;
+                
+                // Если куб практически не движется И достаточно времени прошло с его создания, 
+                // начинаем притягивать его к центру
+                if (isAtRest && isCooledDown) {
+                    // Вектор направления к центру
+                    const directionToCenter = new THREE.Vector3(
+                        originalCubePosition.x - cube.position.x,
+                        originalCubePosition.y - cube.position.y, 
+                        originalCubePosition.z - cube.position.z
+                    );
+                    
+                    // Нормализуем вектор и умножаем на силу притяжения
+                    if (directionToCenter.length() > 0.1) { // Если куб не слишком близко к центру
+                        directionToCenter.normalize();
+                        
+                        // Базовая сила притяжения
+                        const baseAttractionForce = 0.0002;
+                        
+                        // Усиление притяжения в зависимости от размера куба
+                        // Чем больше куб, тем сильнее он притягивается к центру
+                        const sizeFactor = cube.userData.size * 2;
+                        const attractionForce = baseAttractionForce * sizeFactor;
+                        
+                        // Применяем силу притяжения по всем осям
+                        velocities[index].x += directionToCenter.x * attractionForce;
+                        velocities[index].y += directionToCenter.y * attractionForce;
+                        velocities[index].z += directionToCenter.z * attractionForce;
+                    }
+                    
+                    // Добавляем притяжение к ближайшим кубам такого же размера
+                    attractToSimilarCubes(cube, index);
+                }
+            });
+            
+            renderer.render(scene, camera);
+        }
+
+        // Обновляем функцию притяжения к похожим кубам с учетом размера
+        function attractToSimilarCubes(cube, index) {
+            const currentSize = cube.userData.size;
+            const attractionRadius = currentSize * 4; // Радиус притяжения к другим кубам
+            
+            // Базовая сила притяжения, теперь также зависит от размера
+            const baseAttractionForce = 0.0002;
+            const sizeFactor = currentSize * 1.5; // Немного меньший множитель, чем для центра
+            const attractionForce = baseAttractionForce * sizeFactor;
+            
+            // Находим кубы того же размера в радиусе притяжения
+            for (let i = 0; i < cubes.length; i++) {
+                if (i === index) continue; // Пропускаем сам куб
+                
+                const otherCube = cubes[i];
+                // Проверяем, того же ли размера другой куб (с учетом погрешности)
+                if (Math.abs(otherCube.userData.size - currentSize) < 0.001) {
+                    const distance = cube.position.distanceTo(otherCube.position);
+                    
+                    // Если куб в пределах радиуса притяжения
+                    if (distance < attractionRadius && distance > 0.01) {
+                        // Создаем вектор направления к другому кубу (включая Y-компоненту)
+                        const direction = new THREE.Vector3(
+                            otherCube.position.x - cube.position.x,
+                            otherCube.position.y - cube.position.y, // Включаем движение по Y
+                            otherCube.position.z - cube.position.z
+                        ).normalize();
+                        
+                        // Применяем силу притяжения, которая сильнее на малых расстояниях
+                        const forceFactor = 1 - (distance / attractionRadius); // Более сильное притяжение на близком расстоянии
+                        velocities[index].x += direction.x * attractionForce * forceFactor;
+                        velocities[index].y += direction.y * attractionForce * forceFactor;
+                        velocities[index].z += direction.z * attractionForce * forceFactor;
+                        
+                        // Визуальный эффект - кубы начинают светиться, когда они близки к слиянию
+                        if (distance < currentSize * 2.5) {
+                            // Постепенно усиливаем свечение по мере сближения
+                            const glowIntensity = 1 - (distance / (currentSize * 2.5));
+                            cube.material.emissive.setRGB(glowIntensity * 0.3, glowIntensity * 0.3, glowIntensity * 0.5);
+                            otherCube.material.emissive.setRGB(glowIntensity * 0.3, glowIntensity * 0.3, glowIntensity * 0.5);
+                        } else {
+                            // Сбрасываем свечение
+                            cube.material.emissive.setRGB(0, 0, 0);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Функция проверки коллизий между кубами
+        function checkCollisions() {
+            for (let i = 0; i < cubes.length; i++) {
+                for (let j = i + 1; j < cubes.length; j++) {
+                    const cube1 = cubes[i];
+                    const cube2 = cubes[j];
+                    
+                    // Размеры кубов (с учетом масштаба)
+                    const size1 = cube1.userData.size;
+                    const size2 = cube2.userData.size;
+                    
+                    // Проверка пересечения по всем осям
+                    const dx = Math.abs(cube1.position.x - cube2.position.x);
+                    const dy = Math.abs(cube1.position.y - cube2.position.y);
+                    const dz = Math.abs(cube1.position.z - cube2.position.z);
+                    
+                    // Сумма половин размеров кубов
+                    const overlapX = (size1 + size2) / 2 - dx;
+                    const overlapY = (size1 + size2) / 2 - dy;
+                    const overlapZ = (size1 + size2) / 2 - dz;
+                    
+                    // Если кубы пересекаются по всем осям
+                    if (overlapX > 0 && overlapY > 0 && overlapZ > 0) {
+                        // Коэффициент упругости столкновения
+                        const restitution = 0.7;
+                        
+                        // Находим минимальное перекрытие
+                        const minOverlap = Math.min(overlapX, overlapY, overlapZ);
+                        
+                        // Вектор направления от куба 1 к кубу 2
+                        const direction = new THREE.Vector3(
+                            cube2.position.x - cube1.position.x,
+                            cube2.position.y - cube1.position.y,
+                            cube2.position.z - cube1.position.z
+                        ).normalize();
+                        
+                        // Разрешение коллизии - разделяем кубы
+                        if (minOverlap === overlapX) {
+                            // Разделение по оси X
+                            const moveX = overlapX / 2;
+                            if (cube1.position.x < cube2.position.x) {
+                                cube1.position.x -= moveX;
+                                cube2.position.x += moveX;
+                            } else {
+                                cube1.position.x += moveX;
+                                cube2.position.x -= moveX;
+                            }
+                            
+                            // Обмен скоростями по X
+                            const tempVx = velocities[i].x;
+                            velocities[i].x = -velocities[j].x * restitution;
+                            velocities[j].x = -tempVx * restitution;
+                        } else if (minOverlap === overlapY) {
+                            // Разделение по оси Y
+                            const moveY = overlapY / 2;
+                            if (cube1.position.y < cube2.position.y) {
+                                cube1.position.y -= moveY;
+                                cube2.position.y += moveY;
+                            } else {
+                                cube1.position.y += moveY;
+                                cube2.position.y -= moveY;
+                            }
+                            
+                            // Обмен скоростями по Y
+                            const tempVy = velocities[i].y;
+                            velocities[i].y = -velocities[j].y * restitution;
+                            velocities[j].y = -tempVy * restitution;
+                        } else {
+                            // Разделение по оси Z
+                            const moveZ = overlapZ / 2;
+                            if (cube1.position.z < cube2.position.z) {
+                                cube1.position.z -= moveZ;
+                                cube2.position.z += moveZ;
+                            } else {
+                                cube1.position.z += moveZ;
+                                cube2.position.z -= moveZ;
+                            }
+                            
+                            // Обмен скоростями по Z
+                            const tempVz = velocities[i].z;
+                            velocities[i].z = -velocities[j].z * restitution;
+                            velocities[j].z = -tempVz * restitution;
+                        }
+                        
+                        // Добавляем небольшую случайность при столкновении для более интересного движения
+                        velocities[i].x += (Math.random() - 0.5) * 0.01;
+                        velocities[i].y += (Math.random() - 0.5) * 0.01;
+                        velocities[i].z += (Math.random() - 0.5) * 0.01;
+                        
+                        velocities[j].x += (Math.random() - 0.5) * 0.01;
+                        velocities[j].y += (Math.random() - 0.5) * 0.01;
+                        velocities[j].z += (Math.random() - 0.5) * 0.01;
+                    }
+                }
+            }
+        }
+
+        // Функция проверки возможности объединения кубов
+        function checkMerging() {
+            // Сортируем кубы по размеру для проверки объединения
+            let cubesToMerge = [];
+            
+            // Группируем кубы одинакового размера
+            let sizeGroups = {};
+            
+            cubes.forEach(cube => {
+                const size = cube.userData.size.toFixed(5); // Округляем для избежания проблем с плавающей точкой
+                if (!sizeGroups[size]) {
+                    sizeGroups[size] = [];
+                }
+                sizeGroups[size].push(cube);
+            });
+            
+            // Проверяем каждую группу одинаковых размеров
+            for (let size in sizeGroups) {
+                const cubesOfSize = sizeGroups[size];
+                
+                // Если в группе меньше 4 кубов, то объединение невозможно
+                if (cubesOfSize.length < 4) continue;
+                
+                // Отфильтровываем недавно созданные кубы - они не должны участвовать в слиянии
+                const coolingPeriod = 120; // такой же период как и для притяжения
+                const cooledCubes = cubesOfSize.filter(cube => {
+                    const index = cubes.indexOf(cube);
+                    return (currentTime - cubeCreationTimes[index]) > coolingPeriod;
+                });
+                
+                // Если недостаточно "охлажденных" кубов, то объединение невозможно
+                if (cooledCubes.length < 4) continue;
+                
+                // Проверяем близость кубов друг к другу, используя только "охлажденные" кубы
+                for (let i = 0; i < cooledCubes.length; i++) {
+                    const currentCube = cooledCubes[i];
+                    let nearCubes = [currentCube];
+                    
+                    for (let j = 0; j < cooledCubes.length; j++) {
+                        if (i === j) continue;
+                        
+                        const otherCube = cooledCubes[j];
+                        const distance = currentCube.position.distanceTo(otherCube.position);
+                        
+                        // Увеличиваем радиус обнаружения близких кубов
+                        if (distance < currentCube.userData.size * 3.0) { // Увеличено с 1.5 до 3.0
+                            nearCubes.push(otherCube);
+                        }
+                    }
+                    
+                    // Если нашли 4 куба рядом друг с другом
+                    if (nearCubes.length >= 4) {
+                        // Найти центр группы кубов
+                        let center = new THREE.Vector3(0, 0, 0);
+                        nearCubes.forEach(cube => {
+                            center.add(cube.position);
+                        });
+                        center.divideScalar(nearCubes.length);
+                        
+                        // Смягчаем условие для слияния - кубы не должны быть настолько близко к общему центру
+                        let allClose = true;
+                        nearCubes.forEach(cube => {
+                            if (cube.position.distanceTo(center) > cube.userData.size * 2.0) { // Увеличено с 0.5 до 2.0
+                                allClose = false;
+                            }
+                        });
+                        
+                        if (allClose) {
+                            cubesToMerge = nearCubes.slice(0, 4); // Берем первые 4 куба
+                            break;
+                        }
+                    }
+                }
+                
+                if (cubesToMerge.length >= 4) break;
+            }
+            
+            // Если нашли 4 куба для объединения
+            if (cubesToMerge.length >= 4) {
+                const mergedCube = mergeCubes(cubesToMerge);
+                console.log("Объединен куб с размером: " + mergedCube.userData.size);
+            }
+        }
+
+        // Объединение кубов - проверим и исправим, если нужно
+        function mergeCubes(cubesToMerge) {
+            // Вычисляем центр группы
+            let center = new THREE.Vector3(0, 0, 0);
+            cubesToMerge.forEach(cube => {
+                center.add(cube.position);
+            });
+            center.divideScalar(cubesToMerge.length);
+            
+            // Размер объединенного куба
+            const newSize = cubesToMerge[0].userData.size * 2;
+            
+            // Цвет нового куба - усредняем цвета сливаемых кубов
+            let r = 0, g = 0, b = 0;
+            cubesToMerge.forEach(cube => {
+                const color = new THREE.Color(cube.material.color.getHex());
+                r += color.r;
+                g += color.g;
+                b += color.b;
+            });
+            r /= cubesToMerge.length;
+            g /= cubesToMerge.length;
+            b /= cubesToMerge.length;
+            const mergedColor = new THREE.Color(r, g, b);
+            
+            // Создаем эффект вспышки при слиянии
+            const flashGeometry = new THREE.SphereGeometry(newSize * 1.2, 16, 16);
+            const flashMaterial = new THREE.MeshBasicMaterial({
+                color: mergedColor,
+                transparent: true,
+                opacity: 0.7,
+                blending: THREE.AdditiveBlending
+            });
+            const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+            flash.position.copy(center);
+            cubeGroup.add(flash);
+            
+            // Анимация вспышки
+            let flashLife = 0;
+            const flashAnimation = setInterval(() => {
+                flashLife++;
+                flash.scale.set(1 - flashLife * 0.05, 1 - flashLife * 0.05, 1 - flashLife * 0.05);
+                flash.material.opacity = Math.max(0, 0.7 - flashLife * 0.07);
+                
+                if (flashLife >= 10) {
+                    clearInterval(flashAnimation);
+                    cubeGroup.remove(flash);
+                    flash.material.dispose();
+                    flash.geometry.dispose();
+                }
+            }, 30);
+            
+            // Удаляем кубы, которые объединяем
+            cubesToMerge.forEach(cube => {
+                const index = cubes.indexOf(cube);
+                if (index > -1) {
+                    cubes.splice(index, 1);
+                    velocities.splice(index, 1);
+                    cubeCreationTimes.splice(index, 1);
+                    cubeGroup.remove(cube);
+                    cube.material.dispose();
+                    cube.geometry.dispose();
+                }
+            });
+            
+            // Создаем новый куб с цветом, полученным от исходных кубов
+            return createCube(center.x, center.y, center.z, newSize, mergedColor.getHex());
+        }
+
+        // Создание частицы шлейфа
+        function createTrailParticle(position, color, size, lifetime) {
+            const geometry = new THREE.SphereGeometry(size, 6, 6);
+            const material = new THREE.MeshBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.7,
+                blending: THREE.AdditiveBlending // Добавляем аддитивное смешивание для лучшего визуального эффекта
+            });
+            
+            const particle = new THREE.Mesh(geometry, material);
+            particle.position.copy(position);
+            particle.userData.lifetime = lifetime || 40; // Время жизни в кадрах
+            particle.userData.maxLifetime = particle.userData.lifetime;
+            particle.userData.initialSize = size;
+            
+            trailGroup.add(particle);
+            trailParticles.push(particle);
+            
+            return particle;
+        }
+
+        // Обновление частиц шлейфа
+        function updateTrailParticles() {
+            // Обработка существующих частиц
+            for (let i = trailParticles.length - 1; i >= 0; i--) {
+                const particle = trailParticles[i];
+                
+                // Уменьшаем время жизни
+                particle.userData.lifetime--;
+                
+                // Уменьшаем размер и прозрачность
+                const lifeRatio = particle.userData.lifetime / particle.userData.maxLifetime;
+                particle.scale.set(lifeRatio, lifeRatio, lifeRatio);
+                particle.material.opacity = lifeRatio * 0.7;
+                
+                // Удаляем истекшие частицы
+                if (particle.userData.lifetime <= 0) {
+                    trailGroup.remove(particle);
+                    trailParticles.splice(i, 1);
+                    particle.material.dispose();
+                    particle.geometry.dispose();
+                }
+            }
+            
+            // Добавляем частицы для быстро движущихся кубов
+            cubes.forEach((cube, index) => {
+                const speed = Math.sqrt(
+                    velocities[index].x * velocities[index].x + 
+                    velocities[index].y * velocities[index].y + 
+                    velocities[index].z * velocities[index].z
+                );
+                
+                // Если куб движется достаточно быстро
+                if (speed > 0.02) {
+                    // Создаем частицы шлейфа с вероятностью, зависящей от скорости
+                    const chanceToCreate = Math.min(0.8, speed * 10);
+                    if (Math.random() < chanceToCreate) {
+                        // Создаем частицу позади куба (с учетом его движения)
+                        const offset = new THREE.Vector3(
+                            -velocities[index].x * 3,
+                            -velocities[index].y * 3,
+                            -velocities[index].z * 3
+                        );
+                        
+                        // Получаем позицию в локальных координатах группы
+                        const particlePosition = cube.position.clone().add(offset);
+                        
+                        // Размер частицы шлейфа зависит от скорости и размера куба
+                        const particleSize = cube.userData.size * 0.2 * (0.5 + speed * 2);
+                        
+                        // Цвет частицы - берём цвет от куба, но делаем более светлым
+                        const cubeColor = new THREE.Color(cube.material.color.getHex());
+                        const particleColor = new THREE.Color(
+                            Math.min(1, cubeColor.r + 0.3),
+                            Math.min(1, cubeColor.g + 0.3),
+                            Math.min(1, cubeColor.b + 0.3)
+                        );
+                        
+                        // Время жизни частицы зависит от скорости
+                        const lifetime = 20 + Math.floor(speed * 100);
+                        
+                        createTrailParticle(particlePosition, particleColor, particleSize, lifetime);
+                    }
+                }
+            });
+            
+            // Добавляем частицы при вращении сцены
+            if (isRotating) {
+                // Если вращение достаточно быстрое
+                if (rotationSpeed > 0.01) {
+                    // Добавляем частицы к случайным кубам
+                    for (let i = 0; i < Math.min(cubes.length, 2); i++) {
+                        const randomIndex = Math.floor(Math.random() * cubes.length);
+                        const cube = cubes[randomIndex];
+                        
+                        // Случайная позиция вокруг куба
+                        const angle = Math.random() * Math.PI * 2;
+                        const distance = cube.userData.size * (0.7 + Math.random() * 0.6);
+                        
+                        const offset = new THREE.Vector3(
+                            Math.cos(angle) * distance,
+                            Math.sin(angle) * distance,
+                            (Math.random() - 0.5) * distance
+                        );
+                        
+                        const particlePosition = cube.position.clone().add(offset);
+                        
+                        // Размер частицы шлейфа от вращения
+                        const particleSize = cube.userData.size * 0.15 * (1 + rotationSpeed * 10);
+                        
+                        // Яркий цвет для частиц от вращения
+                        const particleColor = new THREE.Color(
+                            0.7 + Math.random() * 0.3,
+                            0.7 + Math.random() * 0.3,
+                            0.9 + Math.random() * 0.1
+                        );
+                        
+                        createTrailParticle(particlePosition, particleColor, particleSize, 15 + Math.random() * 20);
+                    }
+                }
+            }
+        }
+
+        // Создание эффекта молнии
+        function createLightning() {
+            // Если кубов недостаточно, не создаем молнию
+            if (cubes.length < 3) return;
+            
+            // Очищаем предыдущие сегменты молнии, если они есть
+            clearLightning();
+            
+            // Сортируем кубы по расстоянию от центра (от дальних к ближним)
+            const sortedCubes = [...cubes].sort((a, b) => {
+                const distA = a.position.length();
+                const distB = b.position.length();
+                return distB - distA; // От дальних к ближним
+            });
+            
+            // Создаем путь молнии - сначала самый дальний куб
+            let lightningPath = [sortedCubes[0]];
+            let currentCube = sortedCubes[0];
+            
+            // Выбираем следующие кубы в пути, предпочитая те, что ближе к центру
+            // но с некоторой случайностью для выбора разных путей
+            while (lightningPath.length < Math.min(sortedCubes.length, 6)) { // Ограничиваем длину пути
+                const remainingCubes = sortedCubes.filter(cube => !lightningPath.includes(cube));
+                if (remainingCubes.length === 0) break;
+                
+                // Находим расстояния от текущего куба до всех остальных
+                const distances = remainingCubes.map(cube => {
+                    return {
+                        cube: cube,
+                        distance: currentCube.position.distanceTo(cube.position),
+                        distanceToCenter: cube.position.length()
+                    };
+                });
+                
+                // Сортируем по взвешенной комбинации близости к текущему кубу и близости к центру
+                distances.sort((a, b) => {
+                    // Веса для баланса между переходом к ближайшему кубу и продвижением к центру
+                    const weightCurrentToNext = 0.6;
+                    const weightTowardCenter = 0.4;
+                    
+                    const scoreA = a.distance * weightCurrentToNext + a.distanceToCenter * weightTowardCenter;
+                    const scoreB = b.distance * weightCurrentToNext + b.distanceToCenter * weightTowardCenter;
+                    
+                    return scoreA - scoreB;
+                });
+                
+                // Добавляем куб в путь с некоторой случайностью
+                // Выбираем из первых нескольких кубов, чтобы добавить разнообразие путей
+                const randomIndex = Math.floor(Math.random() * Math.min(3, distances.length));
+                currentCube = distances[randomIndex].cube;
+                lightningPath.push(currentCube);
+            }
+            
+            // Запускаем анимацию молнии
+            lightningInProgress = true;
+            lightningSegments = [];
+            createLightningSegment(0, lightningPath);
+            
+            return lightningPath;
+        }
+
+        // Создаем один сегмент молнии между двумя кубами
+        function createLightningSegment(index, path) {
+            if (index >= path.length - 1) {
+                // Закончили создание всех сегментов
+                setTimeout(() => {
+                    clearLightning();
+                }, 500); // Удаляем молнию через полсекунды после завершения
+                return;
+            }
+            
+            const startCube = path[index];
+            const endCube = path[index + 1];
+            
+            // Создаем точки молнии между двумя кубами
+            const start = startCube.position.clone();
+            const end = endCube.position.clone();
+            const midPoints = [];
+            
+            // Расстояние между кубами
+            const distance = start.distanceTo(end);
+            const segments = Math.max(3, Math.floor(distance * 5)); // Количество сегментов зависит от расстояния
+            
+            // Направление от начала к концу
+            const direction = end.clone().sub(start);
+            const normal = new THREE.Vector3(-direction.y, direction.x, direction.z).normalize();
+            
+            // Создаем зигзагообразный путь молнии
+            midPoints.push(start);
+            
+            for (let i = 1; i < segments; i++) {
+                // Промежуточная точка на прямой линии между кубами
+                const point = start.clone().add(direction.clone().multiplyScalar(i / segments));
+                
+                // Добавляем случайное отклонение от прямой линии
+                const deviation = Math.random() * 0.3 - 0.15; // Случайное отклонение
+                point.add(normal.clone().multiplyScalar(deviation));
+                
+                // Добавляем случайное отклонение по всем осям для более естественного вида
+                point.x += (Math.random() - 0.5) * 0.2;
+                point.y += (Math.random() - 0.5) * 0.2;
+                point.z += (Math.random() - 0.5) * 0.2;
+                
+                midPoints.push(point);
+            }
+            
+            midPoints.push(end);
+            
+            // Создаем геометрию молнии
+            for (let i = 0; i < midPoints.length - 1; i++) {
+                const lightningGeometry = new THREE.BufferGeometry();
+                const positions = new Float32Array([
+                    midPoints[i].x, midPoints[i].y, midPoints[i].z,
+                    midPoints[i+1].x, midPoints[i+1].y, midPoints[i+1].z
+                ]);
+                
+                lightningGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                
+                // Материал молнии - яркий с эффектом свечения
+                const lightningMaterial = new THREE.LineBasicMaterial({
+                    color: 0x4080ff, // Голубоватый цвет молнии
+                    linewidth: 3,
+                    transparent: true,
+                    opacity: 0.8
+                });
+                
+                const lightningLine = new THREE.Line(lightningGeometry, lightningMaterial);
+                lightningSegments.push(lightningLine);
+                cubeGroup.add(lightningLine);
+            }
+            
+            // Подсвечиваем кубы
+            startCube.material.emissive.set(0x3060ff);
+            endCube.material.emissive.set(0x3060ff);
+            
+            // Создаем эффект вспышки в точке соединения молнии с кубом
+            createLightningFlash(end, endCube.userData.size);
+            
+            // Планируем создание следующего сегмента
+            setTimeout(() => {
+                createLightningSegment(index + 1, path);
+            }, 150); // Задержка между перескоками молнии
+        }
+
+        // Создаем эффект вспышки в точке соединения молнии с кубом
+        function createLightningFlash(position, size) {
+            // Геометрия вспышки
+            const flashGeometry = new THREE.SphereGeometry(size * 0.3, 8, 8);
+            const flashMaterial = new THREE.MeshBasicMaterial({
+                color: 0x80c0ff,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+            
+            const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+            flash.position.copy(position);
+            cubeGroup.add(flash);
+            
+            // Анимация вспышки
+            let scale = 0.1;
+            let flashLife = 0;
+            const flashAnimation = setInterval(() => {
+                flashLife++;
+                scale = 1 + Math.sin(flashLife * 0.5) * 0.3;
+                flash.scale.set(scale, scale, scale);
+                flash.material.opacity = Math.max(0, 0.8 - flashLife * 0.1);
+                
+                if (flashLife >= 10) {
+                    clearInterval(flashAnimation);
+                    cubeGroup.remove(flash);
+                    flash.material.dispose();
+                    flash.geometry.dispose();
+                }
+            }, 30);
+        }
+
+        // Очистка сегментов молнии
+        function clearLightning() {
+            // Удаляем сегменты молнии
+            lightningSegments.forEach(segment => {
+                cubeGroup.remove(segment);
+                segment.geometry.dispose();
+                segment.material.dispose();
+            });
+            
+            lightningSegments = [];
+            lightningInProgress = false;
+            
+            // Сбрасываем свечение кубов
+            cubes.forEach(cube => {
+                if (cube.material.emissive) {
+                    cube.material.emissive.setRGB(0.066, 0.066, 0.066); // Возвращаем стандартное свечение
+                }
+            });
+        }
+
+        // Обновление сегментов молнии
+        function updateLightning() {
+            // Обновляем молнию для дополнительных визуальных эффектов
+            lightningSegments.forEach(segment => {
+                // Небольшое "дрожание" молнии для большей реалистичности
+                if (Math.random() > 0.7) {
+                    const positions = segment.geometry.attributes.position.array;
+                    for (let i = 0; i < positions.length; i += 3) {
+                        // Не трогаем начальную и конечную точки, только промежуточные
+                        if (i > 2 && i < positions.length - 3) {
+                            positions[i] += (Math.random() - 0.5) * 0.05;
+                            positions[i+1] += (Math.random() - 0.5) * 0.05;
+                            positions[i+2] += (Math.random() - 0.5) * 0.05;
+                        }
+                    }
+                    segment.geometry.attributes.position.needsUpdate = true;
+                }
+                
+                // Случайное мерцание молнии
+                segment.material.opacity = 0.5 + Math.random() * 0.5;
+            });
+        }
+
+        // Предотвращение контекстного меню при правом клике
+        document.addEventListener('contextmenu', event => event.preventDefault());
+
+        // Запуск приложения
+        init();
+    </script>
+</body>
+</html>

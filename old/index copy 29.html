@@ -1,0 +1,2160 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>WebGL Куб</title>
+    <style>
+        body { 
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        canvas { 
+            display: block; 
+        }
+        .info {
+            position: absolute;
+            
+            
+            background-color: rgba(0, 0, 0, 0.5);
+            
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            color: rgb(36, 35, 35);
+            font-size: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="info">
+        <h3>Инструкция:</h3>
+        <p>Колесо мыши - приближение/удаление</p>
+        <p>Левый клик на кубе - разделение на 4 куба</p>
+        <p>Правый клик + перетаскивание - вращение сцены</p>
+        <p>1 - авто камера - 1</p>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Основные переменные
+        let scene, camera, renderer, raycaster, mouse;
+        let cubes = [];
+        let isDragging = false;
+        let draggedCube = null;
+        let isRotating = false;
+        let previousMousePosition = {
+            x: 0,
+            y: 0
+        };
+        let cubeGroup;
+        let velocities = []; // Добавляем массив для хранения скоростей
+        let originalCubePosition = new THREE.Vector3(0, 0, 0); // Позиция исходного куба
+        let cubeCreationTimes = []; // Добавляем массив для хранения времени создания кубов
+        let currentTime = 0; // Текущее время для отслеживания периода "неприлипания"
+        let trailParticles = []; // Массив для хранения частиц шлейфа
+        let rotationSpeed = 0; // Скорость вращения для шлейфа
+        let lightningSegments = []; // Массив для хранения сегментов молнии
+        let lightningTimer = 0; // Таймер для создания молнии
+        let lightningInProgress = false; // Флаг активной молнии
+        let cometTimer = 0; // Таймер для появления кометы
+        let cometActive = false; // Флаг активной кометы
+        let cometGroup; // Группа объектов кометы
+        let nebulae = []; // Массив для хранения туманностей
+        let nebulaGroup; // Группа для туманностей
+        let lastCameraRotation = new THREE.Vector3(); // Сохраняем последнее вращение камеры
+
+        // Переменные для автоматического вращения камеры
+        let autoRotate = false; // Флаг включения автоматического вращения
+        let autoRotateSpeedX = 0; // Текущая скорость вращения по X
+        let autoRotateSpeedY = 0; // Текущая скорость вращения по Y
+        let targetAutoRotateSpeedX = 0; // Целевая скорость вращения по X
+        let targetAutoRotateSpeedY = 0; // Целевая скорость вращения по Y
+        let autoRotateTimer = 0; // Таймер для смены направления
+        let autoRotatePhase = 0; // Фаза автоматического вращения
+
+        // Инициализация сцены
+        function init() {
+            // Создание сцены
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            // Создание камеры
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            camera.position.y = 0; // Возвращаем камеру в нейтральную позицию
+
+            // Создание рендерера
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Добавление света
+            const ambientLight = new THREE.AmbientLight(0x404040);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 7);
+            directionalLight.castShadow = true; // Включаем отбрасывание теней
+            scene.add(directionalLight);
+            
+            // Настройка теней
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Инициализация инструментов выбора
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            // Создание группы для кубов
+            cubeGroup = new THREE.Group();
+            scene.add(cubeGroup);
+
+            // Создаем группу для частиц шлейфа как дочерний элемент cubeGroup
+            trailGroup = new THREE.Group();
+            cubeGroup.add(trailGroup);
+
+            // Создаем группу для кометы
+            cometGroup = new THREE.Group();
+            scene.add(cometGroup);
+
+            // Создаем группу для туманностей и делаем её дочерней для cubeGroup
+            // Это позволит туманностям вращаться вместе с кубами при вращении камеры
+            nebulaGroup = new THREE.Group();
+            cubeGroup.add(nebulaGroup); // Меняем с scene.add на cubeGroup.add
+
+            // Создание первого куба
+            createCube(0, 0, 0, 1);
+
+            // Создаем несколько туманностей
+            createNebulae();
+
+            // Обработчики событий
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('wheel', onMouseWheel);
+
+            // Добавляем обработчик клавиатуры
+            window.addEventListener('keydown', onKeyDown);
+
+            // Запуск анимации
+            animate();
+        }
+
+        // Создание куба с яркими цветами - заменяем на сферу
+        function createCube(x, y, z, size, color) {
+            // Заменяем BoxGeometry на SphereGeometry
+            // С аргументами: радиус, сегменты по горизонтали, сегменты по вертикали
+            const geometry = new THREE.SphereGeometry(size/2, 16, 12);
+            
+            // Создаем яркие цвета для сфер
+            const brightColors = [
+                0xFF0000, // Ярко-красный
+                0x00FF00, // Ярко-зеленый
+                0x0000FF, // Ярко-синий
+                0xFFFF00, // Ярко-желтый
+                0xFF00FF, // Ярко-розовый
+                0x00FFFF, // Ярко-голубой
+                0xFF8000, // Оранжевый
+                0x8000FF  // Фиолетовый
+            ];
+            
+            // Выбираем случайный яркий цвет
+            const cubeColor = color || brightColors[Math.floor(Math.random() * brightColors.length)];
+            
+            const material = new THREE.MeshPhongMaterial({
+                color: cubeColor,
+                shininess: 80, // Увеличиваем блеск
+                specular: 0x333333, // Более заметные блики
+                emissive: 0x111111 // Легкое собственное свечение для лучшей видимости
+            });
+            
+            // Заменяем название переменной с cube на sphere
+            const sphere = new THREE.Mesh(geometry, material);
+            sphere.position.set(x, y, z);
+            sphere.userData.size = size;
+            
+            // Включаем отбрасывание теней
+            sphere.castShadow = true;
+            sphere.receiveShadow = true;
+            
+            cubeGroup.add(sphere);
+            cubes.push(sphere);
+            
+            // Добавляем нулевую начальную скорость для сферы
+            velocities.push({ 
+                x: 0, 
+                y: 0, 
+                z: 0 
+            });
+            
+            // Сохраняем время создания сферы
+            cubeCreationTimes.push(currentTime);
+            
+            return sphere;
+        }
+
+        // Разделение куба на 4 меньших - соответственно меняем на разделение сферы
+        function explodeCube(cube) {
+            console.log("Разбиваем сферу с размером: " + cube.userData.size);
+
+            const position = cube.position.clone();
+            const size = cube.userData.size / 2;
+            const offset = size / 2;
+            
+            // Удаление исходной сферы и её скорости
+            cubeGroup.remove(cube);
+            const index = cubes.indexOf(cube);
+            if (index > -1) {
+                cubes.splice(index, 1);
+                velocities.splice(index, 1);
+                cubeCreationTimes.splice(index, 1);
+            }
+            
+            // Функция для генерации случайной скорости разлета (для всех осей)
+            function randomVelocity() {
+                return (Math.random() - 0.5) * 0.7;
+            }
+            
+            // Создание 4-х новых сфер с разлетом
+            const sphere1 = createCube(position.x - offset, position.y - offset, position.z - offset, size);
+            const sphere2 = createCube(position.x + offset, position.y - offset, position.z - offset, size);
+            const sphere3 = createCube(position.x - offset, position.y + offset, position.z - offset, size);
+            const sphere4 = createCube(position.x + offset, position.y + offset, position.z - offset, size);
+            
+            // Устанавливаем случайные скорости для разлета
+            const index1 = cubes.indexOf(sphere1);
+            const index2 = cubes.indexOf(sphere2);
+            const index3 = cubes.indexOf(sphere3);
+            const index4 = cubes.indexOf(sphere4);
+            
+            // Базовая сила разлета
+            const explosionForce = 0.05;
+            
+            // Устанавливаем скорости разлета во все стороны от центра
+            velocities[index1] = { 
+                x: -explosionForce + randomVelocity(), 
+                y: -explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity() 
+            };
+            velocities[index2] = { 
+                x: explosionForce + randomVelocity(), 
+                y: -explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity() 
+            };
+            velocities[index3] = { 
+                x: -explosionForce + randomVelocity(), 
+                y: explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity() 
+            };
+            velocities[index4] = { 
+                x: explosionForce + randomVelocity(), 
+                y: explosionForce + randomVelocity(), 
+                z: -explosionForce + randomVelocity()
+            };
+        }
+
+        // Обработчики событий мыши
+        function onMouseDown(event) {
+            event.preventDefault();
+            
+            // Получение координат клика
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cubes);
+            
+            if (intersects.length > 0) {
+                const selectedCube = intersects[0].object;
+                
+                // Левый клик - взрыв куба
+                if (event.button === 0) {
+                    if (selectedCube.userData.size > 0.1) { // Минимальный размер для деления
+                        explodeCube(selectedCube);
+                    }
+                } 
+                // Правый клик - начало перетаскивания
+                else if (event.button === 2) {
+                    isDragging = true;
+                    draggedCube = selectedCube;
+                }
+            } else if (event.button === 2) {
+                // Правый клик без выбора куба - вращение сцены
+                isRotating = true;
+            }
+            
+            previousMousePosition = {
+                x: event.clientX,
+                y: event.clientY
+            };
+        }
+
+        function onMouseUp(event) {
+            isDragging = false;
+            isRotating = false;
+            draggedCube = null;
+        }
+
+        function onMouseMove(event) {
+            if (isDragging && draggedCube) {
+                // Перетаскивание куба
+                const deltaX = (event.clientX - previousMousePosition.x) * 0.01;
+                const deltaY = (event.clientY - previousMousePosition.y) * 0.01;
+                
+                draggedCube.position.x += deltaX;
+                draggedCube.position.y -= deltaY;
+            } 
+            else if (isRotating) {
+                // Вращение группы кубов
+                const deltaRotationX = (event.clientX - previousMousePosition.x) * 0.01;
+                const deltaRotationY = (event.clientY - previousMousePosition.y) * 0.01;
+                
+                cubeGroup.rotation.y += deltaRotationX;
+                cubeGroup.rotation.x += deltaRotationY;
+                
+                // Расчет скорости вращения для создания шлейфа и эффектов в туманностях
+                rotationSpeed = Math.sqrt(deltaRotationX * deltaRotationX + deltaRotationY * deltaRotationY);
+                
+                // Сохраняем направление и скорость вращения камеры
+                lastCameraRotation.set(deltaRotationX, deltaRotationY, 0);
+                
+                // Добавляем эффекты к туманностям при вращении камеры
+                if (rotationSpeed > 0.02) {
+                    addCameraRotationEffects();
+                    
+                    // Влияем на траекторию кометы, если она активна
+                    if (cometActive) {
+                        adjustCometTrajectory();
+                    }
+                }
+            }
+            
+            previousMousePosition = {
+                x: event.clientX,
+                y: event.clientY
+            };
+        }
+
+        function onMouseWheel(event) {
+            // Приближение/удаление камеры
+            const delta = Math.sign(event.deltaY);
+            camera.position.z += delta * 0.5;
+            
+            // Ограничения на приближение/удаление
+            camera.position.z = Math.max(2, Math.min(20, camera.position.z));
+        }
+
+        // Изменение размера окна
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Обработчик нажатия клавиш
+        function onKeyDown(event) {
+            // Клавиша "1" - включение/выключение автоматического вращения
+            if (event.key === '1') {
+                toggleAutoRotate();
+            }
+        }
+
+        // Функция переключения автоматического вращения
+        function toggleAutoRotate() {
+            autoRotate = !autoRotate;
+            
+            if (autoRotate) {
+                // Запускаем вращение
+                startNewRotationCycle();
+            } else {
+                // Останавливаем вращение
+                targetAutoRotateSpeedX = 0;
+                targetAutoRotateSpeedY = 0;
+            }
+        }
+
+        // Запуск нового цикла вращения с новыми параметрами
+        function startNewRotationCycle() {
+            // Выбираем новые целевые скорости
+            targetAutoRotateSpeedX = (Math.random() - 0.5) * 0.006; // Случайное значение от -0.003 до 0.003
+            targetAutoRotateSpeedY = (Math.random() - 0.5) * 0.006; // Случайное значение от -0.003 до 0.003
+            
+            // Выбираем время до следующего изменения направления (5-15 секунд)
+            autoRotateTimer = 300 + Math.floor(Math.random() * 600);
+            
+            // Сбрасываем фазу вращения
+            autoRotatePhase = 0;
+        }
+
+        // Обновление автоматического вращения
+        function updateAutoRotate() {
+            if (!autoRotate) return;
+            
+            // Увеличиваем таймер вращения
+            autoRotateTimer--;
+            autoRotatePhase++;
+            
+            // Если таймер достиг нуля, меняем направление
+            if (autoRotateTimer <= 0) {
+                // Если текущая скорость близка к нулю, начинаем новый цикл
+                if (Math.abs(autoRotateSpeedX) < 0.0005 && Math.abs(autoRotateSpeedY) < 0.0005) {
+                    startNewRotationCycle();
+                } else {
+                    // Иначе сначала останавливаемся
+                    targetAutoRotateSpeedX = 0;
+                    targetAutoRotateSpeedY = 0;
+                }
+            }
+            
+            // Плавно меняем текущую скорость в сторону целевой
+            autoRotateSpeedX += (targetAutoRotateSpeedX - autoRotateSpeedX) * 0.02;
+            autoRotateSpeedY += (targetAutoRotateSpeedY - autoRotateSpeedY) * 0.02;
+            
+            // Применяем вращение к группе кубов
+            cubeGroup.rotation.y += autoRotateSpeedX;
+            cubeGroup.rotation.x += autoRotateSpeedY;
+            
+            // Вычисляем общую скорость вращения для эффектов
+            const currentRotationSpeed = Math.sqrt(autoRotateSpeedX * autoRotateSpeedX + autoRotateSpeedY * autoRotateSpeedY);
+            
+            // Если скорость вращения достаточно велика, активируем эффекты
+            if (currentRotationSpeed > 0.001) {
+                rotationSpeed = currentRotationSpeed * 10; // Масштабируем для эффектов
+                
+                // Создаем векторы вращения для эффектов
+                lastCameraRotation.set(autoRotateSpeedX, autoRotateSpeedY, 0);
+                
+                // Добавляем эффекты
+                addCameraRotationEffects();
+                
+                // Влияем на комету, если она активна
+                if (cometActive) {
+                    adjustCometTrajectory();
+                }
+            }
+        }
+
+        // Анимация
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // Увеличиваем счетчик времени
+            currentTime++;
+            
+            // Увеличиваем таймер молнии
+            lightningTimer++;
+            
+            // Увеличиваем таймер кометы
+            cometTimer++;
+            
+            // Обновляем автоматическое вращение камеры
+            updateAutoRotate();
+            
+            // Случайно создаем молнию каждые 5-10 секунд, если ее еще нет
+            if (!lightningInProgress && lightningTimer > 300 && Math.random() < 0.005) {
+                createLightning();
+                lightningTimer = 0;
+            }
+            
+            // Делаем комету более редкой - увеличиваем интервал и уменьшаем вероятность
+            if (!cometActive && cometTimer > 900 && Math.random() < 0.001) {
+                createComet();
+                cometTimer = 0;
+            }
+            
+            // Обновляем молнию, если она активна
+            if (lightningInProgress) {
+                updateLightning();
+            }
+            
+            // Обновляем комету, если она активна
+            if (cometActive) {
+                updateComet();
+            }
+            
+            // Проверка коллизий между кубами
+            checkCollisions();
+            
+            // Проверка возможности объединения кубов
+            checkMerging();
+            
+            // Обновляем частицы шлейфа
+            updateTrailParticles();
+            
+            // Обновляем туманности
+            updateNebulae();
+            
+            // Проверяем взаимодействие кубов с туманностями
+            checkCubeNebulaInteraction();
+            
+            // Медленное вращение кубов вокруг своей оси и применение скоростей
+            cubes.forEach((cube, index) => {
+                cube.rotation.x += 0.005;
+                cube.rotation.y += 0.005;
+                
+                // Применяем скорости для движения кубов
+                cube.position.x += velocities[index].x;
+                cube.position.y += velocities[index].y;
+                cube.position.z += velocities[index].z;
+                
+                // Границы мира - предотвращаем выход кубов за пределы видимости
+                const maxDistance = 10; // Максимальное расстояние от центра
+                const bounceFactorWall = 0.8; // Коэффициент отскока от стенок
+                
+                // Отскок от границ мира по всем осям
+                if (Math.abs(cube.position.x) > maxDistance) {
+                    cube.position.x = Math.sign(cube.position.x) * maxDistance;
+                    velocities[index].x = -velocities[index].x * bounceFactorWall;
+                }
+                
+                if (Math.abs(cube.position.y) > maxDistance) {
+                    cube.position.y = Math.sign(cube.position.y) * maxDistance;
+                    velocities[index].y = -velocities[index].y * bounceFactorWall;
+                }
+                
+                if (Math.abs(cube.position.z) > maxDistance) {
+                    cube.position.z = Math.sign(cube.position.z) * maxDistance;
+                    velocities[index].z = -velocities[index].z * bounceFactorWall;
+                }
+                
+                // Постепенное замедление (очень малое трение в невесомости)
+                velocities[index].x *= 0.995;
+                velocities[index].y *= 0.995;
+                velocities[index].z *= 0.995;
+                
+                // Добавляем слабое случайное движение для эффекта парения
+                if (Math.random() < 0.1) { // С вероятностью 10% добавляем импульс
+                    velocities[index].x += (Math.random() - 0.5) * 0.0003;
+                    velocities[index].y += (Math.random() - 0.5) * 0.0003;
+                    velocities[index].z += (Math.random() - 0.5) * 0.0003;
+                }
+                
+                // Остановка слишком медленных движений
+                if (Math.abs(velocities[index].x) < 0.0001) velocities[index].x = 0;
+                if (Math.abs(velocities[index].y) < 0.0001) velocities[index].y = 0;
+                if (Math.abs(velocities[index].z) < 0.0001) velocities[index].z = 0;
+                
+                // Проверка, находится ли куб в состоянии "покоя"
+                const isAtRest = Math.abs(velocities[index].x) < 0.001 && 
+                                  Math.abs(velocities[index].y) < 0.001 && 
+                                  Math.abs(velocities[index].z) < 0.001;
+                
+                // Период "охлаждения" - время, в течение которого новые кубы не притягиваются
+                const coolingPeriod = 120; // примерно 2 секунды при 60 FPS
+                const isCooledDown = (currentTime - cubeCreationTimes[index]) > coolingPeriod;
+                
+                // Если куб практически не движется И достаточно времени прошло с его создания, 
+                // начинаем притягивать его к центру
+                if (isAtRest && isCooledDown) {
+                    // Вектор направления к центру
+                    const directionToCenter = new THREE.Vector3(
+                        originalCubePosition.x - cube.position.x,
+                        originalCubePosition.y - cube.position.y, 
+                        originalCubePosition.z - cube.position.z
+                    );
+                    
+                    // Нормализуем вектор и умножаем на силу притяжения
+                    if (directionToCenter.length() > 0.1) { // Если куб не слишком близко к центру
+                        directionToCenter.normalize();
+                        
+                        // Базовая сила притяжения
+                        const baseAttractionForce = 0.0002;
+                        
+                        // Усиление притяжения в зависимости от размера куба
+                        // Чем больше куб, тем сильнее он притягивается к центру
+                        const sizeFactor = cube.userData.size * 2;
+                        const attractionForce = baseAttractionForce * sizeFactor;
+                        
+                        // Применяем силу притяжения по всем осям
+                        velocities[index].x += directionToCenter.x * attractionForce;
+                        velocities[index].y += directionToCenter.y * attractionForce;
+                        velocities[index].z += directionToCenter.z * attractionForce;
+                    }
+                    
+                    // Добавляем притяжение к ближайшим кубам такого же размера
+                    attractToSimilarCubes(cube, index);
+                }
+            });
+            
+            renderer.render(scene, camera);
+        }
+
+        // Обновляем функцию притяжения к похожим кубам с учетом размера
+        function attractToSimilarCubes(cube, index) {
+            const currentSize = cube.userData.size;
+            const attractionRadius = currentSize * 4; // Радиус притяжения к другим кубам
+            
+            // Базовая сила притяжения, теперь также зависит от размера
+            const baseAttractionForce = 0.0002;
+            const sizeFactor = currentSize * 1.5; // Немного меньший множитель, чем для центра
+            const attractionForce = baseAttractionForce * sizeFactor;
+            
+            // Находим кубы того же размера в радиусе притяжения
+            for (let i = 0; i < cubes.length; i++) {
+                if (i === index) continue; // Пропускаем сам куб
+                
+                const otherCube = cubes[i];
+                // Проверяем, того же ли размера другой куб (с учетом погрешности)
+                if (Math.abs(otherCube.userData.size - currentSize) < 0.001) {
+                    const distance = cube.position.distanceTo(otherCube.position);
+                    
+                    // Если куб в пределах радиуса притяжения
+                    if (distance < attractionRadius && distance > 0.01) {
+                        // Создаем вектор направления к другому кубу (включая Y-компоненту)
+                        const direction = new THREE.Vector3(
+                            otherCube.position.x - cube.position.x,
+                            otherCube.position.y - cube.position.y, // Включаем движение по Y
+                            otherCube.position.z - cube.position.z
+                        ).normalize();
+                        
+                        // Применяем силу притяжения, которая сильнее на малых расстояниях
+                        const forceFactor = 1 - (distance / attractionRadius); // Более сильное притяжение на близком расстоянии
+                        velocities[index].x += direction.x * attractionForce * forceFactor;
+                        velocities[index].y += direction.y * attractionForce * forceFactor;
+                        velocities[index].z += direction.z * attractionForce * forceFactor;
+                        
+                        // Визуальный эффект - кубы начинают светиться, когда они близки к слиянию
+                        if (distance < currentSize * 2.5) {
+                            // Постепенно усиливаем свечение по мере сближения
+                            const glowIntensity = 1 - (distance / (currentSize * 2.5));
+                            cube.material.emissive.setRGB(glowIntensity * 0.3, glowIntensity * 0.3, glowIntensity * 0.5);
+                            otherCube.material.emissive.setRGB(glowIntensity * 0.3, glowIntensity * 0.3, glowIntensity * 0.5);
+                        } else {
+                            // Сбрасываем свечение
+                            cube.material.emissive.setRGB(0, 0, 0);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Функция проверки коллизий между кубами
+        function checkCollisions() {
+            for (let i = 0; i < cubes.length; i++) {
+                for (let j = i + 1; j < cubes.length; j++) {
+                    const cube1 = cubes[i];
+                    const cube2 = cubes[j];
+                    
+                    // Размеры кубов (с учетом масштаба)
+                    const size1 = cube1.userData.size;
+                    const size2 = cube2.userData.size;
+                    
+                    // Проверка пересечения по всем осям
+                    const dx = Math.abs(cube1.position.x - cube2.position.x);
+                    const dy = Math.abs(cube1.position.y - cube2.position.y);
+                    const dz = Math.abs(cube1.position.z - cube2.position.z);
+                    
+                    // Сумма половин размеров кубов
+                    const overlapX = (size1 + size2) / 2 - dx;
+                    const overlapY = (size1 + size2) / 2 - dy;
+                    const overlapZ = (size1 + size2) / 2 - dz;
+                    
+                    // Если кубы пересекаются по всем осям
+                    if (overlapX > 0 && overlapY > 0 && overlapZ > 0) {
+                        // Коэффициент упругости столкновения
+                        const restitution = 0.7;
+                        
+                        // Находим минимальное перекрытие
+                        const minOverlap = Math.min(overlapX, overlapY, overlapZ);
+                        
+                        // Вектор направления от куба 1 к кубу 2
+                        const direction = new THREE.Vector3(
+                            cube2.position.x - cube1.position.x,
+                            cube2.position.y - cube1.position.y,
+                            cube2.position.z - cube1.position.z
+                        ).normalize();
+                        
+                        // Разрешение коллизии - разделяем кубы
+                        if (minOverlap === overlapX) {
+                            // Разделение по оси X
+                            const moveX = overlapX / 2;
+                            if (cube1.position.x < cube2.position.x) {
+                                cube1.position.x -= moveX;
+                                cube2.position.x += moveX;
+                            } else {
+                                cube1.position.x += moveX;
+                                cube2.position.x -= moveX;
+                            }
+                            
+                            // Обмен скоростями по X
+                            const tempVx = velocities[i].x;
+                            velocities[i].x = -velocities[j].x * restitution;
+                            velocities[j].x = -tempVx * restitution;
+                        } else if (minOverlap === overlapY) {
+                            // Разделение по оси Y
+                            const moveY = overlapY / 2;
+                            if (cube1.position.y < cube2.position.y) {
+                                cube1.position.y -= moveY;
+                                cube2.position.y += moveY;
+                            } else {
+                                cube1.position.y += moveY;
+                                cube2.position.y -= moveY;
+                            }
+                            
+                            // Обмен скоростями по Y
+                            const tempVy = velocities[i].y;
+                            velocities[i].y = -velocities[j].y * restitution;
+                            velocities[j].y = -tempVy * restitution;
+                        } else {
+                            // Разделение по оси Z
+                            const moveZ = overlapZ / 2;
+                            if (cube1.position.z < cube2.position.z) {
+                                cube1.position.z -= moveZ;
+                                cube2.position.z += moveZ;
+                            } else {
+                                cube1.position.z += moveZ;
+                                cube2.position.z -= moveZ;
+                            }
+                            
+                            // Обмен скоростями по Z
+                            const tempVz = velocities[i].z;
+                            velocities[i].z = -velocities[j].z * restitution;
+                            velocities[j].z = -tempVz * restitution;
+                        }
+                        
+                        // Добавляем небольшую случайность при столкновении для более интересного движения
+                        velocities[i].x += (Math.random() - 0.5) * 0.01;
+                        velocities[i].y += (Math.random() - 0.5) * 0.01;
+                        velocities[i].z += (Math.random() - 0.5) * 0.01;
+                        
+                        velocities[j].x += (Math.random() - 0.5) * 0.01;
+                        velocities[j].y += (Math.random() - 0.5) * 0.01;
+                        velocities[j].z += (Math.random() - 0.5) * 0.01;
+                    }
+                }
+            }
+        }
+
+        // Функция проверки возможности объединения кубов
+        function checkMerging() {
+            // Сортируем кубы по размеру для проверки объединения
+            let cubesToMerge = [];
+            
+            // Группируем кубы одинакового размера
+            let sizeGroups = {};
+            
+            cubes.forEach(cube => {
+                const size = cube.userData.size.toFixed(5); // Округляем для избежания проблем с плавающей точкой
+                if (!sizeGroups[size]) {
+                    sizeGroups[size] = [];
+                }
+                sizeGroups[size].push(cube);
+            });
+            
+            // Проверяем каждую группу одинаковых размеров
+            for (let size in sizeGroups) {
+                const cubesOfSize = sizeGroups[size];
+                
+                // Если в группе меньше 4 кубов, то объединение невозможно
+                if (cubesOfSize.length < 4) continue;
+                
+                // Отфильтровываем недавно созданные кубы - они не должны участвовать в слиянии
+                const coolingPeriod = 120; // такой же период как и для притяжения
+                const cooledCubes = cubesOfSize.filter(cube => {
+                    const index = cubes.indexOf(cube);
+                    return (currentTime - cubeCreationTimes[index]) > coolingPeriod;
+                });
+                
+                // Если недостаточно "охлажденных" кубов, то объединение невозможно
+                if (cooledCubes.length < 4) continue;
+                
+                // Проверяем близость кубов друг к другу, используя только "охлажденные" кубы
+                for (let i = 0; i < cooledCubes.length; i++) {
+                    const currentCube = cooledCubes[i];
+                    let nearCubes = [currentCube];
+                    
+                    for (let j = 0; j < cooledCubes.length; j++) {
+                        if (i === j) continue;
+                        
+                        const otherCube = cooledCubes[j];
+                        const distance = currentCube.position.distanceTo(otherCube.position);
+                        
+                        // Увеличиваем радиус обнаружения близких кубов
+                        if (distance < currentCube.userData.size * 3.0) { // Увеличено с 1.5 до 3.0
+                            nearCubes.push(otherCube);
+                        }
+                    }
+                    
+                    // Если нашли 4 куба рядом друг с другом
+                    if (nearCubes.length >= 4) {
+                        // Найти центр группы кубов
+                        let center = new THREE.Vector3(0, 0, 0);
+                        nearCubes.forEach(cube => {
+                            center.add(cube.position);
+                        });
+                        center.divideScalar(nearCubes.length);
+                        
+                        // Смягчаем условие для слияния - кубы не должны быть настолько близко к общему центру
+                        let allClose = true;
+                        nearCubes.forEach(cube => {
+                            if (cube.position.distanceTo(center) > cube.userData.size * 2.0) { // Увеличено с 0.5 до 2.0
+                                allClose = false;
+                            }
+                        });
+                        
+                        if (allClose) {
+                            cubesToMerge = nearCubes.slice(0, 4); // Берем первые 4 куба
+                            break;
+                        }
+                    }
+                }
+                
+                if (cubesToMerge.length >= 4) break;
+            }
+            
+            // Если нашли 4 куба для объединения
+            if (cubesToMerge.length >= 4) {
+                const mergedCube = mergeCubes(cubesToMerge);
+                console.log("Объединен куб с размером: " + mergedCube.userData.size);
+            }
+        }
+
+        // Объединение кубов - проверим и исправим, если нужно
+        function mergeCubes(cubesToMerge) {
+            // Вычисляем центр группы
+            let center = new THREE.Vector3(0, 0, 0);
+            cubesToMerge.forEach(cube => {
+                center.add(cube.position);
+            });
+            center.divideScalar(cubesToMerge.length);
+            
+            // Размер объединенного куба
+            const newSize = cubesToMerge[0].userData.size * 2;
+            
+            // Цвет нового куба - усредняем цвета сливаемых кубов
+            let r = 0, g = 0, b = 0;
+            cubesToMerge.forEach(cube => {
+                const color = new THREE.Color(cube.material.color.getHex());
+                r += color.r;
+                g += color.g;
+                b += color.b;
+            });
+            r /= cubesToMerge.length;
+            g /= cubesToMerge.length;
+            b /= cubesToMerge.length;
+            const mergedColor = new THREE.Color(r, g, b);
+            
+            // Создаем эффект вспышки при слиянии
+            const flashGeometry = new THREE.SphereGeometry(newSize * 1.2, 16, 16);
+            const flashMaterial = new THREE.MeshBasicMaterial({
+                color: mergedColor,
+                transparent: true,
+                opacity: 0.7,
+                blending: THREE.AdditiveBlending
+            });
+            const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+            flash.position.copy(center);
+            cubeGroup.add(flash);
+            
+            // Анимация вспышки
+            let flashLife = 0;
+            const flashAnimation = setInterval(() => {
+                flashLife++;
+                flash.scale.set(1 - flashLife * 0.05, 1 - flashLife * 0.05, 1 - flashLife * 0.05);
+                flash.material.opacity = Math.max(0, 0.7 - flashLife * 0.07);
+                
+                if (flashLife >= 10) {
+                    clearInterval(flashAnimation);
+                    cubeGroup.remove(flash);
+                    flash.material.dispose();
+                    flash.geometry.dispose();
+                }
+            }, 30);
+            
+            // Удаляем кубы, которые объединяем
+            cubesToMerge.forEach(cube => {
+                const index = cubes.indexOf(cube);
+                if (index > -1) {
+                    cubes.splice(index, 1);
+                    velocities.splice(index, 1);
+                    cubeCreationTimes.splice(index, 1);
+                    cubeGroup.remove(cube);
+                    cube.material.dispose();
+                    cube.geometry.dispose();
+                }
+            });
+            
+            // Создаем новый куб с цветом, полученным от исходных кубов
+            return createCube(center.x, center.y, center.z, newSize, mergedColor.getHex());
+        }
+
+        // Создание частицы шлейфа
+        function createTrailParticle(position, color, size, lifetime) {
+            const geometry = new THREE.SphereGeometry(size, 6, 6);
+            const material = new THREE.MeshBasicMaterial({
+                color: color,
+                transparent: true,
+                opacity: 0.7,
+                blending: THREE.AdditiveBlending // Добавляем аддитивное смешивание для лучшего визуального эффекта
+            });
+            
+            const particle = new THREE.Mesh(geometry, material);
+            particle.position.copy(position);
+            particle.userData.lifetime = lifetime || 40; // Время жизни в кадрах
+            particle.userData.maxLifetime = particle.userData.lifetime;
+            particle.userData.initialSize = size;
+            
+            trailGroup.add(particle);
+            trailParticles.push(particle);
+            
+            return particle;
+        }
+
+        // Обновление частиц шлейфа
+        function updateTrailParticles() {
+            // Обработка существующих частиц
+            for (let i = trailParticles.length - 1; i >= 0; i--) {
+                const particle = trailParticles[i];
+                
+                // Уменьшаем время жизни
+                particle.userData.lifetime--;
+                
+                // Уменьшаем размер и прозрачность
+                const lifeRatio = particle.userData.lifetime / particle.userData.maxLifetime;
+                particle.scale.set(lifeRatio, lifeRatio, lifeRatio);
+                particle.material.opacity = lifeRatio * 0.7;
+                
+                // Удаляем истекшие частицы
+                if (particle.userData.lifetime <= 0) {
+                    trailGroup.remove(particle);
+                    trailParticles.splice(i, 1);
+                    particle.material.dispose();
+                    particle.geometry.dispose();
+                }
+            }
+            
+            // Добавляем частицы для быстро движущихся кубов
+            cubes.forEach((cube, index) => {
+                const speed = Math.sqrt(
+                    velocities[index].x * velocities[index].x + 
+                    velocities[index].y * velocities[index].y + 
+                    velocities[index].z * velocities[index].z
+                );
+                
+                // Если куб движется достаточно быстро
+                if (speed > 0.02) {
+                    // Создаем частицы шлейфа с вероятностью, зависящей от скорости
+                    const chanceToCreate = Math.min(0.8, speed * 10);
+                    if (Math.random() < chanceToCreate) {
+                        // Создаем частицу позади куба (с учетом его движения)
+                        const offset = new THREE.Vector3(
+                            -velocities[index].x * 3,
+                            -velocities[index].y * 3,
+                            -velocities[index].z * 3
+                        );
+                        
+                        // Получаем позицию в локальных координатах группы
+                        const particlePosition = cube.position.clone().add(offset);
+                        
+                        // Размер частицы шлейфа зависит от скорости и размера куба
+                        const particleSize = cube.userData.size * 0.2 * (0.5 + speed * 2);
+                        
+                        // Цвет частицы - берём цвет от куба, но делаем более светлым
+                        const cubeColor = new THREE.Color(cube.material.color.getHex());
+                        const particleColor = new THREE.Color(
+                            Math.min(1, cubeColor.r + 0.3),
+                            Math.min(1, cubeColor.g + 0.3),
+                            Math.min(1, cubeColor.b + 0.3)
+                        );
+                        
+                        // Время жизни частицы зависит от скорости
+                        const lifetime = 20 + Math.floor(speed * 100);
+                        
+                        createTrailParticle(particlePosition, particleColor, particleSize, lifetime);
+                    }
+                }
+            });
+            
+            // Добавляем частицы при вращении сцены
+            if (isRotating) {
+                // Если вращение достаточно быстрое
+                if (rotationSpeed > 0.01) {
+                    // Добавляем частицы к случайным кубам
+                    for (let i = 0; i < Math.min(cubes.length, 2); i++) {
+                        const randomIndex = Math.floor(Math.random() * cubes.length);
+                        const cube = cubes[randomIndex];
+                        
+                        // Случайная позиция вокруг куба
+                        const angle = Math.random() * Math.PI * 2;
+                        const distance = cube.userData.size * (0.7 + Math.random() * 0.6);
+                        
+                        const offset = new THREE.Vector3(
+                            Math.cos(angle) * distance,
+                            Math.sin(angle) * distance,
+                            (Math.random() - 0.5) * distance
+                        );
+                        
+                        const particlePosition = cube.position.clone().add(offset);
+                        
+                        // Размер частицы шлейфа от вращения
+                        const particleSize = cube.userData.size * 0.15 * (1 + rotationSpeed * 10);
+                        
+                        // Яркий цвет для частиц от вращения
+                        const particleColor = new THREE.Color(
+                            0.7 + Math.random() * 0.3,
+                            0.7 + Math.random() * 0.3,
+                            0.9 + Math.random() * 0.1
+                        );
+                        
+                        createTrailParticle(particlePosition, particleColor, particleSize, 15 + Math.random() * 20);
+                    }
+                }
+            }
+        }
+
+        // Создание эффекта молнии
+        function createLightning() {
+            // Сначала очищаем предыдущую молнию, если она существует
+            clearLightning();
+            
+            lightningInProgress = true;
+            
+            // Используем точку начала между случайными кубами или фиксированную позицию
+            let startPoint, endPoint;
+            
+            if (cubes.length >= 99999) {
+                // Выбираем два случайных куба для соединения молнией
+                const randomIndex1 = Math.floor(Math.random() * cubes.length);
+                let randomIndex2 = Math.floor(Math.random() * cubes.length);
+                
+                // Убеждаемся, что выбраны разные кубы
+                while (randomIndex2 === randomIndex1) {
+                    randomIndex2 = Math.floor(Math.random() * cubes.length);
+                }
+                
+                startPoint = cubes[randomIndex1].position.clone();
+                endPoint = cubes[randomIndex2].position.clone();
+            } else {
+                // Случайные точки, если недостаточно кубов
+                startPoint = new THREE.Vector3(
+                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 10
+                );
+                
+                endPoint = new THREE.Vector3(
+                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 10,
+                    (Math.random() - 0.5) * 10
+                );
+            }
+            
+            // Создаем сегменты молнии
+           // createLightningSegments(startPoint, endPoint);
+            
+            // Добавляем ГАРАНТИРОВАННОЕ время жизни молнии
+            // После этого времени молния ОБЯЗАТЕЛЬНО исчезнет
+           // setTimeout(clearLightning, 3); // Максимум 3 секунды
+        }
+
+        // Функция обновления молнии
+        function updateLightning() {
+            if (!lightningInProgress || lightningSegments.length === 0) return;
+            
+            // Здесь код обновления молнии
+            // ...
+            
+            // Обновляем время жизни и удаляем молнию, если ее время истекло
+            lightningSegments.forEach(segment => {
+                segment.lifetime--;
+                
+                // Уменьшаем яркость со временем
+                if (segment.line && segment.lifetime < 5) {
+                    segment.line.material.opacity = segment.lifetime / 5;
+                }
+            });
+            
+            // Фильтруем отработавшие сегменты
+            const activeSegments = lightningSegments.filter(segment => segment.lifetime > 0);
+            
+            // Если все сегменты исчезли, очищаем молнию
+            if (activeSegments.length === 0 && lightningInProgress) {
+                clearLightning();
+            } else {
+                lightningSegments = activeSegments;
+            }
+        }
+
+        // Функция очистки молнии
+        function clearLightning() {
+            // Удаляем все сегменты молнии
+            lightningSegments.forEach(segment => {
+                if (segment.line) {
+                    scene.remove(segment.line);
+                    // Важно освобождать память
+                    if (segment.line.material) segment.line.material.dispose();
+                    if (segment.line.geometry) segment.line.geometry.dispose();
+                }
+            });
+            
+            // Очищаем массив сегментов
+            lightningSegments = [];
+            
+            // Сбрасываем флаг
+            lightningInProgress = false;
+            
+            // Для безопасности добавляем небольшую задержку перед созданием новой молнии
+            lightningTimer = 2000;
+        }
+
+        // Создание эффекта вспышки в точке соединения молнии с кубом
+        function createLightningFlash(position, size) {
+            // Геометрия вспышки
+            const flashGeometry = new THREE.SphereGeometry(size * 0.3, 8, 8);
+            const flashMaterial = new THREE.MeshBasicMaterial({
+                color: 0x80c0ff,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+            
+            const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+            flash.position.copy(position);
+            cubeGroup.add(flash);
+            
+            // Анимация вспышки
+            let scale = 0.1;
+            let flashLife = 0;
+            const flashAnimation = setInterval(() => {
+                flashLife++;
+                scale = 1 + Math.sin(flashLife * 0.5) * 0.3;
+                flash.scale.set(scale, scale, scale);
+                flash.material.opacity = Math.max(0, 0.8 - flashLife * 0.1);
+                
+                if (flashLife >= 10) {
+                    clearInterval(flashAnimation);
+                    cubeGroup.remove(flash);
+                    flash.material.dispose();
+                    flash.geometry.dispose();
+                }
+            }, 30);
+        }
+
+        // Создание кометы - учитываем текущее положение камеры
+        function createComet() {
+            // Очищаем предыдущую комету, если она есть
+            clearComet();
+            
+            cometActive = true;
+            
+            // Определяем случайную сторону появления кометы (1-4: верх, право, низ, лево)
+            const side = Math.floor(Math.random() * 4) + 1;
+            
+            // Задаем начальную и конечную точки траектории
+            let startPoint = new THREE.Vector3();
+            let endPoint = new THREE.Vector3();
+            
+            // Делаем траекторию еще дальше, по самому краю видимости
+            const distanceFar = 90 + Math.random() * 60;
+            const randomOffset = (Math.random() - 0.5) * 6 * distanceFar;
+            
+            // Задаем z-координату еще глубже, чтобы комета была на дальнем фоне
+            const zOffset = -distanceFar * 0.8;
+            
+            // Настраиваем траекторию, чтобы она проходила по краю видимой области
+            switch(side) {
+                case 1: // Сверху по краю
+                    startPoint.set(randomOffset, distanceFar, zOffset);
+                    endPoint.set(-randomOffset * 1.2, -distanceFar * 0.8, zOffset + Math.random() * 30 - 15);
+                    break;
+                case 2: // Справа по краю
+                    startPoint.set(distanceFar, randomOffset, zOffset);
+                    endPoint.set(-distanceFar * 0.8, -randomOffset * 1.2, zOffset + Math.random() * 30 - 15);
+                    break;
+                case 3: // Снизу по краю
+                    startPoint.set(randomOffset, -distanceFar, zOffset);
+                    endPoint.set(-randomOffset * 1.2, distanceFar * 0.8, zOffset + Math.random() * 30 - 15);
+                    break;
+                case 4: // Слева по краю
+                    startPoint.set(-distanceFar, randomOffset, zOffset);
+                    endPoint.set(distanceFar * 0.8, -randomOffset * 1.2, zOffset + Math.random() * 30 - 15);
+                    break;
+            }
+            
+            // Учитываем текущее вращение камеры для корректировки начальной траектории
+            if (cubeGroup.rotation.y !== 0 || cubeGroup.rotation.x !== 0) {
+                // Создаем вектор смещения на основе текущего вращения камеры
+                const rotationInfluence = 20; // Коэффициент влияния вращения
+                const cameraRotationOffset = new THREE.Vector3(
+                    Math.sin(cubeGroup.rotation.y) * rotationInfluence,
+                    Math.sin(cubeGroup.rotation.x) * rotationInfluence,
+                    0
+                );
+                
+                // Применяем смещение к начальной и конечной точкам
+                startPoint.add(cameraRotationOffset);
+                
+                // Для конечной точки используем слегка измененное смещение для интересной траектории
+                const endPointOffset = cameraRotationOffset.clone().multiplyScalar(0.7);
+                endPointOffset.z += (Math.random() - 0.5) * 20; // Добавляем случайность по Z
+                endPoint.add(endPointOffset);
+            }
+            
+            // Создаем ядро кометы - увеличиваем размер для видимости
+            const cometCoreGeometry = new THREE.SphereGeometry(0.5, 2, 2);
+            const cometCoreMaterial = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 1,
+                blending: THREE.AdditiveBlending
+            });
+            
+            const cometCore = new THREE.Mesh(cometCoreGeometry, cometCoreMaterial);
+            cometCore.position.copy(startPoint);
+            cometGroup.add(cometCore);
+            
+            // Создаем свечение вокруг ядра - увеличиваем для лучшей видимости издалека
+            const cometGlowGeometry = new THREE.SphereGeometry(0.5, 1, 1);
+            const cometGlowMaterial = new THREE.MeshBasicMaterial({
+                color: 0xaaccff,
+                transparent: true,
+                opacity: 0.1,
+                blending: THREE.AdditiveBlending,
+                side: THREE.BackSide
+            });
+            
+            const cometGlow = new THREE.Mesh(cometGlowGeometry, cometGlowMaterial);
+            cometGlow.position.copy(startPoint);
+            cometGroup.add(cometGlow);
+            
+            // Сохраняем данные для анимации
+            cometCore.userData.startPoint = startPoint;
+            cometCore.userData.endPoint = endPoint;
+            cometCore.userData.progress = 0;
+            cometCore.userData.speed = 0.002 + Math.random() * 0.001; // Уменьшаем скорость для эффекта дальности
+            
+            // Добавляем параметры для искривления траектории
+            cometCore.userData.curvePoints = []; // Массив контрольных точек для кривой
+            cometCore.userData.originalEndPoint = endPoint.clone(); // Сохраняем оригинальную конечную точку
+            
+            // Создаем начальную кривую траектории
+            updateCometCurve(cometCore);
+            
+            // Сохраняем ссылки на объекты кометы
+            cometGroup.userData.core = cometCore;
+            cometGroup.userData.glow = cometGlow;
+            cometGroup.userData.particles = [];
+            
+            // Создаем направление движения для расчета позиции частиц хвоста
+            cometGroup.userData.direction = new THREE.Vector3().subVectors(endPoint, startPoint).normalize();
+            
+            // Добавляем флаг для возможности случайного затухания
+            cometCore.userData.randomFadeoutChance = Math.random(); // Вероятность затухания
+            cometCore.userData.randomFadeoutProgress = 0.3 + Math.random() * 0.5; // Точка пути для начала затухания (30%-80%)
+            cometCore.userData.isRandomlyFading = false; // Флаг активного случайного затухания
+            
+            // Добавляем "силу" кометы как физического объекта
+            cometCore.userData.power = 0.8 + Math.random() * 0.4; // Физическая сила кометы
+        }
+
+        // Создание частицы хвоста кометы
+        function createCometTailParticle() {
+            if (!cometActive) return;
+            
+            const cometCore = cometGroup.userData.core;
+            const direction = cometGroup.userData.direction;
+            
+            // Создаем частицу позади ядра кометы - длиннее хвост для лучшей видимости
+            const offset = direction.clone().multiplyScalar(-(0.5 + Math.random() * 1.5));
+            const sideOffset = new THREE.Vector3(
+                (Math.random() - 0.5) * 0.4,
+                (Math.random() - 0.5) * 0.4,
+                (Math.random() - 0.5) * 0.4
+            );
+            
+            const particlePosition = cometCore.position.clone().add(offset).add(sideOffset);
+            
+            // Размер частицы - увеличиваем для лучшей видимости издалека
+            const particleSize = 0.3 + Math.random() * 0.4;
+            
+            // Цвет частицы - делаем ярче для лучшей видимости
+            const colorFactor = Math.random();
+            const particleColor = new THREE.Color(
+                0.8 + colorFactor * 0.2, // r
+                0.8 + colorFactor * 0.2, // g
+                0.95 + colorFactor * 0.05  // b
+            );
+            
+            // Создаем геометрию и материал частицы
+            const particleGeometry = new THREE.SphereGeometry(particleSize, 8, 8);
+            const particleMaterial = new THREE.MeshBasicMaterial({
+                color: particleColor,
+                transparent: true,
+                opacity: 0.8,
+                blending: THREE.AdditiveBlending
+            });
+            
+            const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+            particle.position.copy(particlePosition);
+            cometGroup.add(particle);
+            
+            // Сохраняем данные частицы - увеличиваем время жизни для более длинного хвоста
+            particle.userData.lifetime = 30 + Math.random() * 20;
+            particle.userData.maxLifetime = particle.userData.lifetime;
+            particle.userData.initialSize = particleSize;
+            
+            // Добавляем частицу в массив для обновления
+            cometGroup.userData.particles.push(particle);
+        }
+
+        // Обновление кометы - добавляем взаимодействие с кубами
+        function updateComet() {
+            if (!cometActive) return;
+            
+            const cometCore = cometGroup.userData.core;
+            const cometGlow = cometGroup.userData.glow;
+            
+            // Увеличиваем прогресс движения
+            cometCore.userData.progress += cometCore.userData.speed;
+            
+            // Проверка на случайное затухание посреди пути
+            if (!cometCore.userData.isRandomlyFading && 
+                cometCore.userData.progress > cometCore.userData.randomFadeoutProgress && 
+                cometCore.userData.randomFadeoutChance < 0.4) {
+                
+                cometCore.userData.isRandomlyFading = true;
+                
+                // Создаем эффект вспышки перед затуханием
+                const flashGeometry = new THREE.SphereGeometry(4, 16, 16);
+                const flashMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xffffff,
+                    transparent: true,
+                    opacity: 0.8,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+                flash.position.copy(cometCore.position);
+                cometGroup.add(flash);
+                
+                // Анимация вспышки и затем исчезновения
+                let flashLife = 0;
+                const flashAnimation = setInterval(() => {
+                    flashLife++;
+                    flash.scale.set(1 + flashLife * 0.2, 1 + flashLife * 0.2, 1 + flashLife * 0.2);
+                    flash.material.opacity = Math.max(0, 0.8 - flashLife * 0.1);
+                    
+                    if (flashLife >= 10) {
+                        clearInterval(flashAnimation);
+                        cometGroup.remove(flash);
+                        flash.material.dispose();
+                        flash.geometry.dispose();
+                    }
+                }, 30);
+            }
+            
+            // Если комета случайно затухает, ускоряем процесс затухания
+            if (cometCore.userData.isRandomlyFading) {
+                cometCore.material.opacity -= 0.1;
+                cometGlow.material.opacity -= 0.1;
+                
+                // Если полностью затухла, очищаем
+                if (cometCore.material.opacity <= 0) {
+                    clearComet();
+                    return;
+                }
+            }
+            
+            // Вычисляем новую позицию на основе кривой или массива контрольных точек
+            let newPosition;
+            
+            if (cometCore.userData.curvePoints && cometCore.userData.curvePoints.length > 0) {
+                // Используем массив точек для интерполяции
+                const points = cometCore.userData.curvePoints;
+                const progress = cometCore.userData.progress;
+                
+                if (progress >= 1) {
+                    // Если достигли конца пути, используем последнюю точку
+                    newPosition = points[points.length - 1].clone();
+                } else {
+                    // Вычисляем, между какими контрольными точками мы находимся
+                    const segmentCount = points.length - 1;
+                    const scaledProgress = progress * segmentCount;
+                    const segmentIndex = Math.min(Math.floor(scaledProgress), segmentCount - 1);
+                    const segmentProgress = scaledProgress - segmentIndex;
+                    
+                    // Интерполируем между двумя соседними точками
+                    newPosition = new THREE.Vector3().lerpVectors(
+                        points[segmentIndex],
+                        points[segmentIndex + 1],
+                        segmentProgress
+                    );
+                }
+            } else {
+                // Используем простую линейную интерполяцию
+                newPosition = new THREE.Vector3().lerpVectors(
+                    cometCore.userData.startPoint,
+                    cometCore.userData.endPoint,
+                    cometCore.userData.progress
+                );
+            }
+            
+            // Обновляем позицию ядра и свечения
+            cometCore.position.copy(newPosition);
+            cometGlow.position.copy(newPosition);
+            
+            // Пульсация свечения
+            const pulseScale = 1 + 0.2 * Math.sin(currentTime * 0.2);
+            cometGlow.scale.set(pulseScale, pulseScale, pulseScale);
+            
+            // Создаем частицы хвоста
+            if (Math.random() < 0.7) {
+                createCometTailParticle();
+            }
+            
+            // Обновляем существующие частицы хвоста
+            updateCometTailParticles();
+            
+            // Проверяем завершение анимации
+            if (cometCore.userData.progress >= 1) {
+                // Плавно уменьшаем яркость кометы в конце пути
+                cometCore.material.opacity -= 0.05;
+                cometGlow.material.opacity -= 0.05;
+                
+                if (cometCore.material.opacity <= 0) {
+                    clearComet();
+                }
+            }
+            
+            // После обновления позиции кометы проверяем взаимодействие с кубами
+            checkCometCubeInteractions(cometCore.position);
+        }
+
+        // Обновление частиц хвоста кометы
+        function updateCometTailParticles() {
+            const particles = cometGroup.userData.particles;
+            
+            // Обрабатываем каждую частицу
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const particle = particles[i];
+                
+                // Уменьшаем время жизни
+                particle.userData.lifetime--;
+                
+                // Рассчитываем коэффициент жизни (от 1 до 0)
+                const lifeRatio = particle.userData.lifetime / particle.userData.maxLifetime;
+                
+                // Уменьшаем размер и прозрачность
+                particle.scale.set(lifeRatio, lifeRatio, lifeRatio);
+                particle.material.opacity = lifeRatio * 0.7;
+                
+                // Если время жизни истекло, удаляем частицу
+                if (particle.userData.lifetime <= 0) {
+                    cometGroup.remove(particle);
+                    particles.splice(i, 1);
+                    
+                    // Очищаем ресурсы
+                    particle.material.dispose();
+                    particle.geometry.dispose();
+                }
+            }
+        }
+
+        // Очистка кометы
+        function clearComet() {
+            if (!cometGroup) return;
+            
+            // Удаляем ядро и свечение
+            if (cometGroup.userData.core) {
+                cometGroup.remove(cometGroup.userData.core);
+                cometGroup.userData.core.material.dispose();
+                cometGroup.userData.core.geometry.dispose();
+            }
+            
+            if (cometGroup.userData.glow) {
+                cometGroup.remove(cometGroup.userData.glow);
+                cometGroup.userData.glow.material.dispose();
+                cometGroup.userData.glow.geometry.dispose();
+            }
+            
+            // Удаляем все частицы хвоста
+            if (cometGroup.userData.particles) {
+                cometGroup.userData.particles.forEach(particle => {
+                    cometGroup.remove(particle);
+                    particle.material.dispose();
+                    particle.geometry.dispose();
+                });
+                cometGroup.userData.particles = [];
+            }
+            
+            cometActive = false;
+        }
+
+        // Создание облачных туманностей
+        function createNebulae() {
+            // Количество туманностей (2-5)
+            const nebulaCount = 4 + Math.floor(Math.random() * 4);
+            
+            // Цвета для туманностей
+            const nebulaColors = [
+                new THREE.Color(0.5, 0.2, 0.7), // Фиолетовый
+                new THREE.Color(0.2, 0.5, 0.8), // Синий
+                new THREE.Color(0.1, 0.7, 0.5), // Бирюзовый
+                new THREE.Color(0.7, 0.3, 0.1), // Оранжевый
+                new THREE.Color(0.5, 0.7, 0.2)  // Лайм
+            ];
+            
+            // Создаем каждую туманность
+            for (let i = 0; i < nebulaCount; i++) {
+                // Выбираем случайный цвет
+                const color = nebulaColors[Math.floor(Math.random() * nebulaColors.length)];
+                
+                // Размер туманности
+                const size = 5 + Math.random() * 8;
+                
+                // Позиция туманности - увеличиваем разброс для лучшего эффекта
+                const position = new THREE.Vector3(
+                    (Math.random() - 0.5) * 20,
+                    (Math.random() - 0.5) * 20,
+                    (Math.random() - 0.5) * 20
+                );
+                
+                // Создаем туманность
+                createNebula(position, size, color);
+            }
+        }
+
+        // Создание одной туманности
+        function createNebula(position, size, color) {
+            // Объект для хранения данных туманности
+            const nebula = {
+                position: position,
+                size: size,
+                color: color,
+                particles: [],
+                rotationSpeed: {
+                    x: (Math.random() - 0.5) * 0.0005,
+                    y: (Math.random() - 0.5) * 0.0005,
+                    z: (Math.random() - 0.5) * 0.0005
+                }
+            };
+            
+            // Создаем частицы туманности
+            const particleCount = 900 + Math.floor(size * 10);
+            
+            // Группа для частиц одной туманности
+            const particleGroup = new THREE.Group();
+            particleGroup.position.copy(position);
+            nebulaGroup.add(particleGroup);
+            
+            // Сохраняем ссылку на группу
+            nebula.group = particleGroup;
+            
+            // Создаем множество частиц
+            for (let i = 0; i < particleCount; i++) {
+                // Позиция частицы внутри туманности
+                // Используем сферическое распределение с затуханием к краям
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                const radius = size * Math.pow(Math.random(), 0.5); // Корень для более равномерного распределения
+                
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta);
+                const z = radius * Math.cos(phi);
+                
+                // Размер частицы - меньше к краям
+                const particleSize = 0.01 + (1 - radius / size) * 0.03;
+                
+                // Создаем геометрию частицы
+                const particleGeometry = new THREE.SphereGeometry(particleSize, 8, 8);
+                
+                // Создаем материал с вариацией цвета
+                const colorVariation = 0.2;
+                const particleColor = new THREE.Color(
+                    Math.max(0, Math.min(1, color.r + (Math.random() - 0.5) * colorVariation)),
+                    Math.max(0, Math.min(1, color.g + (Math.random() - 0.5) * colorVariation)),
+                    Math.max(0, Math.min(1, color.b + (Math.random() - 0.5) * colorVariation))
+                );
+                
+                const particleMaterial = new THREE.MeshBasicMaterial({
+                    color: particleColor,
+                    transparent: true,
+                    opacity: 0.2 + Math.random() * 0.3,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                // Создаем меш частицы
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+                particle.position.set(x, y, z);
+                
+                // Добавляем случайное вращение
+                particle.rotation.set(
+                    Math.random() * Math.PI * 2,
+                    Math.random() * Math.PI * 2,
+                    Math.random() * Math.PI * 2
+                );
+                
+                // Сохраняем начальную позицию для анимации
+                particle.userData.initialPosition = new THREE.Vector3(x, y, z);
+                particle.userData.pulseFactor = Math.random() * Math.PI * 2; // Случайная фаза пульсации
+                particle.userData.pulseSpeed = 0.01 + Math.random() * 0.02; // Скорость пульсации
+                
+                particleGroup.add(particle);
+                nebula.particles.push(particle);
+            }
+            
+            nebulae.push(nebula);
+            return nebula;
+        }
+
+        // Обновление туманностей
+        function updateNebulae() {
+            nebulae.forEach(nebula => {
+                // Вращаем всю группу частиц
+                nebula.group.rotation.x += nebula.rotationSpeed.x;
+                nebula.group.rotation.y += nebula.rotationSpeed.y;
+                nebula.group.rotation.z += nebula.rotationSpeed.z;
+                
+                // Обновляем каждую частицу
+                nebula.particles.forEach(particle => {
+                    // ИЗМЕНЕНО: Не обновляем постоянно модифицированные частицы
+                    if (!particle.userData.permanentlyModified) {
+                        // Пульсация размера
+                        const pulseValue = Math.sin(currentTime * particle.userData.pulseSpeed + particle.userData.pulseFactor);
+                        const scale = 1 + pulseValue * 0.1;
+                        particle.scale.set(scale, scale, scale);
+                        
+                        // Пульсация прозрачности
+                        particle.material.opacity = 0.2 + 0.1 * pulseValue;
+                    } else {
+                        // Для модифицированных частиц можем добавить другую анимацию
+                        // Например, медленное вращение
+                        particle.rotation.x += 0.003;
+                        particle.rotation.y += 0.002;
+                        particle.rotation.z += 0.001;
+                    }
+                });
+            });
+        }
+
+        // Проверка взаимодействия кубов с туманностями
+        function checkCubeNebulaInteraction() {
+            cubes.forEach((cube, index) => {
+                // Проверка только для движущихся кубов
+                const cubeSpeed = Math.sqrt(
+                    velocities[index].x * velocities[index].x + 
+                    velocities[index].y * velocities[index].y + 
+                    velocities[index].z * velocities[index].z
+                );
+                
+                if (cubeSpeed > 0.0001) {
+                    nebulae.forEach(nebula => {
+                        // Проверяем, находится ли куб внутри туманности
+                        const distanceToNebula = cube.position.distanceTo(nebula.position);
+                        
+                        if (distanceToNebula < nebula.size) {
+                            // Куб внутри туманности - создаем эффект взаимодействия
+                            createNebulaInteractionEffect(cube, nebula, cubeSpeed);
+                        }
+                    });
+                }
+            });
+        }
+
+        // Создание эффекта взаимодействия куба с туманностью
+        function createNebulaInteractionEffect(cube, nebula, speed) {
+            // Вероятность создания частицы зависит от скорости
+            if (Math.random() < speed * 5) {
+                // Смешиваем цвет куба и туманности
+                const cubeColor = new THREE.Color(cube.material.color.getHex());
+                const mixedColor = new THREE.Color(
+                    (cubeColor.r + nebula.color.r) / 2,
+                    (cubeColor.g + nebula.color.g) / 2,
+                    (cubeColor.b + nebula.color.b) / 2
+                );
+                
+                // Размер эффекта
+                const effectSize = cube.userData.size * 0.2;
+                
+                // Случайное положение вокруг куба
+                const offset = new THREE.Vector3(
+                    (Math.random() - 0.5) * cube.userData.size,
+                    (Math.random() - 0.5) * cube.userData.size,
+                    (Math.random() - 0.5) * cube.userData.size
+                );
+                
+                // Позиция эффекта
+                const effectPosition = cube.position.clone().add(offset);
+                
+                // НОВЫЙ КОД: Ищем ближайшие частицы туманности и модифицируем их навсегда
+                const maxDistance = cube.userData.size * 2;
+                let modifiedParticles = 0;
+                
+                // Находим и изменяем несколько ближайших частиц туманности
+                nebula.particles.forEach(particle => {
+                    if (modifiedParticles >= 4) return; // Ограничиваем количество изменяемых частиц за один проход
+                    
+                    // Переводим глобальные координаты куба в локальные координаты туманности
+                    const localCubePos = nebula.group.worldToLocal(effectPosition.clone());
+                    
+                    // Проверяем расстояние между частицей и эффектом
+                    const distance = particle.position.distanceTo(localCubePos);
+                    
+                    // Если частица достаточно близко и еще не модифицирована полностью
+                    if (distance < maxDistance && !particle.userData.permanentlyModified) {
+                        // Отмечаем частицу как постоянно модифицированную
+                        particle.userData.permanentlyModified = true;
+                        
+                        // Изменяем цвет частицы на смешанный цвет
+                        particle.material.color.set(mixedColor);
+                        
+                        // Увеличиваем размер частицы
+                        const newScale = 1 + Math.random() * 1.5;
+                        particle.scale.set(newScale, newScale, newScale);
+                        
+                        // Увеличиваем яркость (непрозрачность) частицы
+                        particle.material.opacity = Math.min(0.8, particle.material.opacity * 1.5);
+                        
+                        // Добавляем случайное смещение частицы для создания "взрыва"
+                        const particleOffset = new THREE.Vector3(
+                            (Math.random() - 0.5) * effectSize,
+                            (Math.random() - 0.5) * effectSize,
+                            (Math.random() - 0.5) * effectSize
+                        );
+                        particle.position.add(particleOffset);
+                        
+                        // Обновляем информацию о начальной позиции, чтобы частица не возвращалась
+                        particle.userData.initialPosition = particle.position.clone();
+                        
+                        modifiedParticles++;
+                    }
+                });
+                
+                // Оставляем создание дополнительной частицы для визуального эффекта
+                const particleGeometry = new THREE.SphereGeometry(effectSize, 8, 8);
+                const particleMaterial = new THREE.MeshBasicMaterial({
+                    color: mixedColor,
+                    transparent: true,
+                    opacity: 0.5,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+                particle.position.copy(effectPosition);
+                
+                // Добавляем частицу к сцене
+                nebulaGroup.add(particle);
+                
+                // Сохраняем данные для анимации
+                particle.userData.lifetime = 50 + Math.random() * 50;
+                particle.userData.maxLifetime = particle.userData.lifetime;
+                
+                // Удаляем временную частицу после окончания жизненного цикла
+                setTimeout(() => {
+                    // Плавное затухание
+                    let opacity = particle.material.opacity;
+                    const fadeInterval = setInterval(() => {
+                        opacity -= 0.05;
+                        if (opacity <= 0) {
+                            clearInterval(fadeInterval);
+                            nebulaGroup.remove(particle);
+                            particle.material.dispose();
+                            particle.geometry.dispose();
+                        } else {
+                            particle.material.opacity = opacity;
+                        }
+                    }, 30);
+                }, particle.userData.lifetime * 16);
+            }
+        }
+
+        // Предотвращение контекстного меню при правом клике
+        document.addEventListener('contextmenu', event => event.preventDefault());
+
+        // Добавляем функцию для создания дополнительного эффекта при вращении камеры
+        function addCameraRotationEffects() {
+            // Если есть скорость вращения, создаем эффект смещения частиц в туманностях
+            if (rotationSpeed > 0.01) {
+                nebulae.forEach(nebula => {
+                    // Сила искажения зависит от скорости вращения
+                    const distortionFactor = rotationSpeed * 5;
+                    
+                    // Применяем временное искажение к части частиц
+                    if (Math.random() < 0.1) { // Только к части частиц для более естественного эффекта
+                        const randomParticleIndex = Math.floor(Math.random() * nebula.particles.length);
+                        const particle = nebula.particles[randomParticleIndex];
+                        
+                        // ИЗМЕНЕНО: Не искажаем постоянно модифицированные частицы
+                        if (!particle.userData.permanentlyModified) {
+                            // Смещаем частицу в направлении вращения
+                            const distortion = new THREE.Vector3(
+                                (Math.random() - 0.5) * distortionFactor,
+                                (Math.random() - 0.5) * distortionFactor,
+                                (Math.random() - 0.5) * distortionFactor
+                            );
+                            
+                            // Сохраняем оригинальную позицию
+                            const originalPosition = particle.userData.initialPosition.clone();
+                            
+                            // Добавляем смещение
+                            particle.position.add(distortion);
+                            
+                            // Возвращаем частицу к исходной позиции через короткое время
+                            setTimeout(() => {
+                                particle.position.copy(originalPosition);
+                            }, 100 + Math.random() * 200);
+                        }
+                    }
+                });
+            }
+        }
+
+        // Функция для корректировки траектории кометы во время полета
+        function adjustCometTrajectory() {
+            if (!cometActive) return;
+            
+            const cometCore = cometGroup.userData.core;
+            
+            // Если скорость вращения значительная, корректируем траекторию кометы
+            if (rotationSpeed > 0.03) {
+                // Сила отклонения зависит от скорости вращения
+                const deviationStrength = rotationSpeed * 10;
+                
+                // Вычисляем вектор отклонения на основе последнего вращения камеры
+                const deviation = new THREE.Vector3(
+                    lastCameraRotation.x * deviationStrength,
+                    lastCameraRotation.y * deviationStrength,
+                    (Math.random() - 0.5) * deviationStrength * 0.5 // Небольшое случайное отклонение по Z
+                );
+                
+                // Применяем отклонение к конечной точке
+                const newEndPoint = cometCore.userData.originalEndPoint.clone().add(deviation);
+                cometCore.userData.endPoint.copy(newEndPoint);
+                
+                // Обновляем кривую траектории
+                updateCometCurve(cometCore);
+                
+                // Создаем эффект "дрожания" хвоста кометы
+                shakeCometTail();
+            }
+        }
+
+        // Функция для создания дрожания хвоста кометы при резком вращении камеры
+        function shakeCometTail() {
+            if (!cometActive) return;
+            
+            const particles = cometGroup.userData.particles;
+            
+            // Применяем дрожание к каждой частице хвоста
+            particles.forEach(particle => {
+                // Сила дрожания зависит от скорости вращения и уменьшается с возрастом частицы
+                const shakeStrength = rotationSpeed * 0.5 * (particle.userData.lifetime / particle.userData.maxLifetime);
+                
+                // Применяем случайное смещение
+                particle.position.x += (Math.random() - 0.5) * shakeStrength;
+                particle.position.y += (Math.random() - 0.5) * shakeStrength;
+                particle.position.z += (Math.random() - 0.5) * shakeStrength;
+            });
+        }
+
+        // Функция для обновления кривой траектории кометы
+        function updateCometCurve(cometCore) {
+            // Создаем новый массив контрольных точек
+            const curvePoints = [];
+            
+            // Добавляем начальную точку
+            curvePoints.push(cometCore.userData.startPoint.clone());
+            
+            // Добавляем несколько промежуточных контрольных точек для кривой
+            const pointCount = 3; // Количество промежуточных точек
+            
+            for (let i = 1; i <= pointCount; i++) {
+                // Создаем промежуточную точку с небольшим случайным отклонением
+                const t = i / (pointCount + 1);
+                const basePoint = new THREE.Vector3().lerpVectors(
+                    cometCore.userData.startPoint,
+                    cometCore.userData.endPoint,
+                    t
+                );
+                
+                // Добавляем случайное отклонение
+                const deviation = 5 + Math.random() * 10;
+                basePoint.x += (Math.random() - 0.5) * deviation;
+                basePoint.y += (Math.random() - 0.5) * deviation;
+                basePoint.z += (Math.random() - 0.5) * deviation;
+                
+                curvePoints.push(basePoint);
+            }
+            
+            // Добавляем конечную точку
+            curvePoints.push(cometCore.userData.endPoint.clone());
+            
+            // Сохраняем новые контрольные точки
+            cometCore.userData.curvePoints = curvePoints;
+        }
+
+        // Проверка взаимодействия кометы с кубами
+        function checkCometCubeInteractions(cometPosition) {
+            // Радиус влияния кометы
+            const cometInfluenceRadius = 15;
+            
+            // Проверяем все кубы на предмет воздействия кометы
+            cubes.forEach((cube, index) => {
+                // Расстояние от кометы до куба
+                const distance = cometPosition.distanceTo(cube.position);
+                
+                // Если куб находится в радиусе влияния кометы
+                if (distance < cometInfluenceRadius) {
+                    // Сила воздействия обратно пропорциональна расстоянию
+                    const forceStrength = Math.max(0.03, 1 - distance / cometInfluenceRadius) * 0.2;
+                    
+                    // Направление от кометы к кубу
+                    const direction = new THREE.Vector3()
+                        .subVectors(cube.position, cometPosition)
+                        .normalize();
+                    
+                    // Применяем силу к кубу
+                    velocities[index].x += direction.x * forceStrength;
+                    velocities[index].y += direction.y * forceStrength;
+                    velocities[index].z += direction.z * forceStrength;
+                    
+                    // Добавляем эффект подсветки куба при взаимодействии с кометой
+                    addCometCubeInteractionEffect(cube, forceStrength);
+                }
+            });
+        }
+
+        // Эффект взаимодействия кометы и куба
+        function addCometCubeInteractionEffect(cube, strength) {
+            // Сохраняем исходный цвет куба
+            const originalColor = cube.material.color.clone();
+            
+            // Создаем свечение вокруг куба
+            const glowGeometry = new THREE.BoxGeometry(
+                cube.userData.size * 1.15, 
+                cube.userData.size * 1.15, 
+                cube.userData.size * 1.15
+            );
+            
+            const glowMaterial = new THREE.MeshBasicMaterial({
+                color: 0xaaccff, // Голубоватое свечение как у кометы
+                transparent: true,
+                opacity: Math.min(0.7, strength * 3),
+                blending: THREE.AdditiveBlending,
+                side: THREE.BackSide
+            });
+            
+            const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+            glow.position.copy(cube.position);
+            cubeGroup.add(glow);
+            
+            // Временно меняем цвет куба на более яркий
+            cube.material.emissive.set(0x334455);
+            cube.material.emissiveIntensity = strength * 2;
+            
+            // Добавляем энергетические частицы вокруг куба
+            for (let i = 0; i < 3; i++) {
+                const particleSize = 0.1 + Math.random() * 0.2;
+                const particleGeometry = new THREE.SphereGeometry(particleSize, 8, 8);
+                
+                const particleColor = new THREE.Color(0x88aaff);
+                const particleMaterial = new THREE.MeshBasicMaterial({
+                    color: particleColor,
+                    transparent: true,
+                    opacity: 0.7,
+                    blending: THREE.AdditiveBlending
+                });
+                
+                const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+                
+                // Размещаем частицу рядом с кубом в случайном направлении
+                const offset = new THREE.Vector3(
+                    (Math.random() - 0.5) * cube.userData.size * 2,
+                    (Math.random() - 0.5) * cube.userData.size * 2,
+                    (Math.random() - 0.5) * cube.userData.size * 2
+                );
+                
+                particle.position.copy(cube.position).add(offset);
+                cubeGroup.add(particle);
+                
+                // Анимация движения частицы прочь от куба
+                const directionFromCube = offset.clone().normalize();
+                const speedFactor = 0.05 + Math.random() * 0.1;
+                
+                // Удаляем частицу и свечение после короткого времени
+                let lifetime = 0;
+                const maxLifetime = 20 + Math.random() * 20;
+                
+                const particleAnimation = setInterval(() => {
+                    lifetime++;
+                    
+                    // Движение частицы
+                    particle.position.x += directionFromCube.x * speedFactor;
+                    particle.position.y += directionFromCube.y * speedFactor;
+                    particle.position.z += directionFromCube.z * speedFactor;
+                    
+                    // Уменьшение размера и прозрачности
+                    const lifeRatio = 1 - lifetime / maxLifetime;
+                    particle.scale.set(lifeRatio, lifeRatio, lifeRatio);
+                    particle.material.opacity = lifeRatio * 0.7;
+                    
+                    if (lifetime >= maxLifetime) {
+                        clearInterval(particleAnimation);
+                        cubeGroup.remove(particle);
+                        particle.material.dispose();
+                        particle.geometry.dispose();
+                    }
+                }, 16);
+            }
+            
+            // Возвращаем куб к исходному состоянию через небольшое время
+            setTimeout(() => {
+                cube.material.emissive.set(0x111111);
+                cube.material.emissiveIntensity = 1;
+                
+                // Плавно уменьшаем яркость свечения
+                let glowFade = 1.0;
+                const fadeInterval = setInterval(() => {
+                    glowFade -= 0.1;
+                    if (glowFade <= 0) {
+                        clearInterval(fadeInterval);
+                        cubeGroup.remove(glow);
+                        glow.material.dispose();
+                        glow.geometry.dispose();
+                    } else {
+                        glow.material.opacity = glow.material.opacity * glowFade;
+                    }
+                }, 50);
+            }, 500);
+        }
+
+        // Функция создания сегментов молнии между двумя точками
+        function createLightningSegments(startPoint, endPoint) {
+            // Очищаем предыдущие сегменты, если они есть
+            lightningSegments = [];
+            
+            // Расстояние между точками
+            const distance = startPoint.distanceTo(endPoint);
+            
+            // Количество сегментов зависит от расстояния
+            const segmentCount = Math.max(3, Math.floor(distance * 3));
+            
+            // Направление от начала к концу
+            const direction = new THREE.Vector3().subVectors(endPoint, startPoint);
+            
+            // Создаем нормаль к направлению для отклонений
+            const normal = new THREE.Vector3(-direction.y, direction.x, direction.z).normalize();
+            
+            // Создаем точки молнии
+            const points = [];
+            points.push(startPoint.clone());
+            
+            // Добавляем промежуточные точки с зигзагами
+            for (let i = 1; i < segmentCount; i++) {
+                // Базовая точка на линии
+                const basePoint = new THREE.Vector3().copy(startPoint).add(
+                    direction.clone().multiplyScalar(i / segmentCount)
+                );
+                
+                // Добавляем случайное отклонение
+                const deviation = new THREE.Vector3()
+                    .copy(normal)
+                    .multiplyScalar((Math.random() - 0.5) * distance * 0.2); // Отклонение пропорционально расстоянию
+                
+                // Добавляем случайное отклонение по всем осям для более естественного вида
+                deviation.add(new THREE.Vector3(
+                    (Math.random() - 0.5) * 0.3,
+                    (Math.random() - 0.5) * 0.3,
+                    (Math.random() - 0.5) * 0.3
+                ));
+                
+                basePoint.add(deviation);
+                points.push(basePoint);
+            }
+            
+            // Добавляем конечную точку
+            points.push(endPoint.clone());
+            
+            // Создаем сегменты молнии между точками
+            for (let i = 0; i < points.length - 1; i++) {
+                const startSegment = points[i];
+                const endSegment = points[i + 1];
+                
+                // Создаем геометрию сегмента
+                const segmentGeometry = new THREE.BufferGeometry();
+                const positions = new Float32Array([
+                    startSegment.x, startSegment.y, startSegment.z,
+                    endSegment.x, endSegment.y, endSegment.z
+                ]);
+                
+                segmentGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+                
+                // Материал для молнии - яркий с эффектом свечения
+                const segmentMaterial = new THREE.LineBasicMaterial({
+                    color: 0x4080ff, // Голубоватый цвет молнии
+                    transparent: true,
+                    opacity: 0.8 + Math.random() * 0.2, // Случайная яркость для каждого сегмента
+                    blending: THREE.AdditiveBlending
+                });
+                
+                // Создаем линию
+                const segmentLine = new THREE.Line(segmentGeometry, segmentMaterial);
+                
+                // Добавляем в сцену
+                scene.add(segmentLine);
+                
+                // Сохраняем сегмент в массиве с временем жизни
+                lightningSegments.push({
+                    line: segmentLine,
+                    lifetime: 30 + Math.round(Math.random() * 20) // Время жизни сегмента (кадры)
+                });
+            }
+            
+            // Создаем вспышки в начальной и конечной точках молнии
+            createLightningFlash(startPoint, 0.3);
+            createLightningFlash(endPoint, 0.3);
+            
+            // Если молния соединяет кубы, подсвечиваем их
+            if (cubes.length >= 2) {
+                // Находим ближайшие кубы к начальной и конечной точкам
+                let closestCubeToStart = null;
+                let closestCubeToEnd = null;
+                let minDistStart = Infinity;
+                let minDistEnd = Infinity;
+                
+                cubes.forEach(cube => {
+                    const distToStart = cube.position.distanceTo(startPoint);
+                    const distToEnd = cube.position.distanceTo(endPoint);
+                    
+                    if (distToStart < minDistStart) {
+                        minDistStart = distToStart;
+                        closestCubeToStart = cube;
+                    }
+                    
+                    if (distToEnd < minDistEnd) {
+                        minDistEnd = distToEnd;
+                        closestCubeToEnd = cube;
+                    }
+                });
+                
+                // Подсвечиваем ближайшие кубы
+                if (closestCubeToStart && closestCubeToStart.material) {
+                    closestCubeToStart.material.emissive.setHex(0x3060ff);
+                    
+                    // Возвращаем нормальное свечение через некоторое время
+                    setTimeout(() => {
+                        if (closestCubeToStart && closestCubeToStart.material) {
+                            closestCubeToStart.material.emissive.setHex(0x111111);
+                        }
+                    }, 500);
+                }
+                
+                if (closestCubeToEnd && closestCubeToEnd.material) {
+                    closestCubeToEnd.material.emissive.setHex(0x3060ff);
+                    
+                    // Возвращаем нормальное свечение через некоторое время
+                    setTimeout(() => {
+                        if (closestCubeToEnd && closestCubeToEnd.material) {
+                            closestCubeToEnd.material.emissive.setHex(0x111111);
+                        }
+                    }, 500);
+                }
+            }
+        }
+
+        // Запуск приложения
+        init();
+    </script>
+</body>
+</html>
